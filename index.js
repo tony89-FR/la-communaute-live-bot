@@ -1,3 +1,15 @@
+const express = require("express");
+const app = express();
+
+app.get("/", (req, res) => {
+  res.send("Bot Discord actif");
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log("Serveur web sur le port " + PORT);
+});s
+
 require("dotenv").config();
 
 const {
