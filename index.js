@@ -50,8 +50,24 @@ app.get("/", (req, res) => {
   res.send("API La communauté live opérationnelle");
 });
 
-app.get("/events", (req, res) => {
-  res.json(eventsCache);
+app.get("/events", async (req, res) => {
+  try {
+    const guild = client.guilds.cache.get("1447249368783523942");
+
+    const events = await guild.scheduledEvents.fetch();
+
+    const liveEvents = [...events.values()].map(event => ({
+      name: event.name,
+      description: event.description || "",
+      startTime: event.scheduledStartTimestamp
+    }));
+
+    res.json(liveEvents);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Impossible de récupérer les événements" });
+  }
 });
 
 app.listen(PORT, () => {
