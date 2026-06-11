@@ -1,6 +1,7 @@
 require("dotenv").config();
 
 const express = require("express");
+const cors = require("cors");
 const {
   Client,
   GatewayIntentBits,
@@ -8,6 +9,9 @@ const {
 } = require("discord.js");
 
 const app = express();
+
+app.use(cors());
+
 const PORT = process.env.PORT || 3000;
 
 const client = new Client({
