@@ -15,7 +15,10 @@ app.use(cors());
 const PORT = process.env.PORT || 3000;
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers
+  ]
 });
 
 let eventsCache = [];
