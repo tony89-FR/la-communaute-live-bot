@@ -39,8 +39,12 @@ const STAFF_ROLES = [
     },
     {
         name: "🟧 Modérateur",
-        id: "1478757828637360251"
+        id: "1448334482867355832"
     }
+    {
+        name: "🟧 Modérateur test",
+        id: "1478757828637360251"
+    },
 ];
 
 const client = new Client({
