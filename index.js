@@ -45,7 +45,7 @@ const STAFF_ROLES = [
         name: "🟧 Modérateur test",
         id: "1478757828637360251"
     },
-        ];
+    ];
 
 const client = new Client({
     intents: [
