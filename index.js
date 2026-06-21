@@ -10,6 +10,7 @@ const {
 } = require("discord.js");
 
 const app = express();
+
 app.use(cors());
 
 const PORT = process.env.PORT || 3000;
@@ -40,12 +41,8 @@ const STAFF_ROLES = [
     {
         name: "🟧 Modérateur",
         id: "1448334482867355832"
-    },
-    {
-        name: "🟧 Modérateur test",
-        id: "1478757828637360251"
-    },
-    ];
+    }
+];
 
 const client = new Client({
     intents: [
@@ -54,23 +51,20 @@ const client = new Client({
     ]
 });
 
-client.once(Events.ClientReady, () => {
-    console.log(`✅ Connecté : ${client.user.tag}`);
-});
+let eventsCache = [];
+let staffCache = [];
 
-app.get("/", (req, res) => {
-    res.send("API La communauté live opérationnelle");
-});
-
-app.get("/events", async (req, res) => {
+async function updateEvents() {
 
     try {
 
-        const guild = await client.guilds.fetch(GUILD_ID);
+        const guild = client.guilds.cache.get(GUILD_ID);
+
+        if (!guild) return;
 
         const events = await guild.scheduledEvents.fetch();
 
-        const result = [...events.values()].map(event => ({
+        eventsCache = [...events.values()].map(event => ({
 
             name: event.name,
             description: event.description || "",
@@ -78,25 +72,23 @@ app.get("/events", async (req, res) => {
 
         }));
 
-        res.json(result);
+        console.log(`📅 ${eventsCache.length} événement(s) synchronisé(s)`);
 
     } catch (err) {
 
-        console.error(err);
-
-        res.status(500).json({
-            error: "Impossible de récupérer les événements"
-        });
+        console.error("Erreur updateEvents :", err);
 
     }
 
-});
+}
 
-app.get("/staff", async (req, res) => {
+async function updateStaff() {
 
     try {
 
-        const guild = await client.guilds.fetch(GUILD_ID);
+        const guild = client.guilds.cache.get(GUILD_ID);
+
+        if (!guild) return;
 
         await guild.members.fetch();
 
@@ -111,16 +103,12 @@ app.get("/staff", async (req, res) => {
             const members = role.members.map(member => ({
 
                 id: member.id,
-
                 username: member.user.username,
-
                 displayName: member.displayName,
 
                 avatar: member.user.displayAvatarURL({
-
                     extension: "png",
                     size: 512
-
                 }),
 
                 profile: `https://discord.com/users/${member.id}`
@@ -137,16 +125,69 @@ app.get("/staff", async (req, res) => {
 
         }
 
-        res.json(staff);
+        staffCache = staff;
+
+        console.log(`👥 Staff synchronisé (${staff.length} rôle(s))`);
 
     } catch (err) {
 
-console.error("Erreur /staff :", err);
+        console.error("Erreur updateStaff :", err);
 
-res.status(500).json({
-    error: err.message
-});
     }
+
+}
+
+client.once(Events.ClientReady, async () => {
+
+    console.log(`✅ Connecté : ${client.user.tag}`);
+
+    await updateEvents();
+    await updateStaff();
+
+    setInterval(updateEvents, 5 * 60 * 1000);
+    setInterval(updateStaff, 30 * 60 * 1000);
+
+});
+
+client.on(Events.GuildMemberUpdate, async () => {
+
+    console.log("🔄 Un membre a été mis à jour");
+
+    await updateStaff();
+
+});
+
+client.on(Events.GuildMemberAdd, async () => {
+
+    console.log("➕ Nouveau membre");
+
+    await updateStaff();
+
+});
+
+client.on(Events.GuildMemberRemove, async () => {
+
+    console.log("➖ Membre parti");
+
+    await updateStaff();
+
+});
+
+app.get("/", (req, res) => {
+
+    res.send("API La communauté live opérationnelle");
+
+});
+
+app.get("/events", (req, res) => {
+
+    res.json(eventsCache);
+
+});
+
+app.get("/staff", (req, res) => {
+
+    res.json(staffCache);
 
 });
 
