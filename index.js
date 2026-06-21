@@ -141,12 +141,11 @@ app.get("/staff", async (req, res) => {
 
     } catch (err) {
 
-        console.error(err);
+console.error("Erreur /staff :", err);
 
-        res.status(500).json({
-            error: "Impossible de récupérer le staff"
-        });
-
+res.status(500).json({
+    error: err.message
+});
     }
 
 });
