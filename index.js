@@ -16,6 +16,7 @@ app.use(cors());
 const PORT = process.env.PORT || 3000;
 
 const { GUILD_ID, STAFF_ROLES } = require("./config/config");
+const { updateStaff } = require("./config/staff");
 
 let eventsCache = [];
 let staffCache = [];
