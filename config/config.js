@@ -9,15 +9,15 @@ module.exports = {
             name: "👑 Fondateur",
             id: "1447263311375761460"
         },
-
-        {
-            name: "✨ Créateur",
-            id: "1447264238279196724"
-        },
-
+        
         {
             name: "🛡 Co-Fondateur",
             id: "1485266632270942288"
+        },
+        
+        {
+            name: "✨ Créateur",
+            id: "1447264238279196724"
         },
 
         {
