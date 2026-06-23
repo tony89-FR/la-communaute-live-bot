@@ -9,6 +9,13 @@ const {
     Events
 } = require("discord.js");
 
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMembers
+    ]
+});
+
 const app = express();
 
 app.use(cors());
@@ -49,70 +56,20 @@ async function updateEvents() {
 
 }
 
-async function updateStaff() {
-
-    try {
-
-        const guild = client.guilds.cache.get(GUILD_ID);
-
-        if (!guild) return;
-
-        await guild.members.fetch();
-
-        const staff = [];
-
-        for (const roleInfo of STAFF_ROLES) {
-
-            const role = guild.roles.cache.get(roleInfo.id);
-
-            if (!role) continue;
-
-            const members = role.members.map(member => ({
-
-                id: member.id,
-                username: member.user.username,
-                displayName: member.displayName,
-
-                avatar: member.user.displayAvatarURL({
-                    extension: "png",
-                    size: 512
-                }),
-
-                profile: `https://discord.com/users/${member.id}`
-
-            }));
-
-            staff.push({
-
-                role: roleInfo.name,
-                color: role.hexColor,
-                members
-
-            });
-
-        }
-
-        staffCache = staff;
-
-        console.log(`👥 Staff synchronisé (${staff.length} rôle(s))`);
-
-    } catch (err) {
-
-        console.error("Erreur updateStaff :", err);
-
-    }
-
-}
-
 client.once(Events.ClientReady, async () => {
 
     console.log(`✅ Connecté : ${client.user.tag}`);
 
     await updateEvents();
-    await updateStaff();
+    staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
 
-    setInterval(updateEvents, 5 * 60 * 1000);
-    setInterval(updateStaff, 30 * 60 * 1000);
+    setInterval(async () => {
+        await updateEvents();
+    }, 5 * 60 * 1000);
+
+    setInterval(async () => {
+        staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
+    }, 30 * 60 * 1000);
 
 });
 
@@ -120,7 +77,7 @@ client.on(Events.GuildMemberUpdate, async () => {
 
     console.log("🔄 Un membre a été mis à jour");
 
-    await updateStaff();
+    staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
 
 });
 
@@ -128,7 +85,7 @@ client.on(Events.GuildMemberAdd, async () => {
 
     console.log("➕ Nouveau membre");
 
-    await updateStaff();
+    staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
 
 });
 
@@ -136,7 +93,7 @@ client.on(Events.GuildMemberRemove, async () => {
 
     console.log("➖ Membre parti");
 
-    await updateStaff();
+    staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
 
 });
 
