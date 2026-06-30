@@ -25,6 +25,7 @@ const PORT = process.env.PORT || 3000;
 const { GUILD_ID, STAFF_ROLES } = require("./config/config");
 const { updateStaff } = require("./config/staff");
 const { updateEvents } = require("./services/events");
+const { updateStats } = require("./services/stats");
 
 let eventsCache = [];
 let staffCache = [];
