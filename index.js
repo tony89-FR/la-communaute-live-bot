@@ -29,13 +29,15 @@ const { updateStats } = require("./services/stats");
 
 let eventsCache = [];
 let staffCache = [];
+let statsCache = {};
 
 client.once(Events.ClientReady, async () => {
 
     console.log(`✅ Connecté : ${client.user.tag}`);
     
-    eventsCache = await updateEvents(client, GUILD_ID);
-    staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
+eventsCache = await updateEvents(client, GUILD_ID);
+staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
+statsCache = await updateStats(client, GUILD_ID);
 
     setInterval(async () => {
     eventsCache = await updateEvents(client, GUILD_ID);
@@ -45,6 +47,10 @@ client.once(Events.ClientReady, async () => {
         staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
     }, 30 * 60 * 1000);
 
+    setInterval(async () => {
+    statsCache = await updateStats(client, GUILD_ID);
+}, 5 * 60 * 1000);
+    
 });
 
 client.on(Events.GuildMemberUpdate, async () => {
@@ -69,6 +75,9 @@ client.on(Events.GuildMemberRemove, async () => {
 
     staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
 
+});
+app.get("/stats", (req, res) => {
+    res.json(statsCache);
 });
 
 app.get("/", (req, res) => {
