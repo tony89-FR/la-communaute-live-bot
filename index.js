@@ -27,8 +27,6 @@ const PORT = process.env.PORT || 3000;
 const {
     GUILD_ID,
     STAFF_ROLES,
-    ANNOUNCEMENTS_CHANNEL_ID,
-    RULES_CHANNEL_ID
 } = require("./config/config");
 
 const { updateStaff } = require("./config/staff");
@@ -36,15 +34,11 @@ const { updateEvents } = require("./services/events");
 const { updateStats } = require("./services/stats");
 
 // Nouveaux services
-const { updateAnnouncements } = require("./services/announcements");
-const { updateRules } = require("./services/rules");
 
 // Cache
 let eventsCache = [];
 let staffCache = [];
 let statsCache = {};
-let announcementsCache = [];
-let rulesCache = [];
 
 client.once(Events.ClientReady, async () => {
 
@@ -54,16 +48,6 @@ client.once(Events.ClientReady, async () => {
     eventsCache = await updateEvents(client, GUILD_ID);
     staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
     statsCache = await updateStats(client, GUILD_ID);
-
-    announcementsCache = await updateAnnouncements(
-        client,
-        ANNOUNCEMENTS_CHANNEL_ID
-    );
-
-    rulesCache = await updateRules(
-        client,
-        RULES_CHANNEL_ID
-    );
 
     console.log("✅ Toutes les données sont chargées.");
 
@@ -81,23 +65,6 @@ client.once(Events.ClientReady, async () => {
     setInterval(async () => {
         staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
     }, 30 * 60 * 1000);
-
-    // Annonces
-    setInterval(async () => {
-        announcementsCache = await updateAnnouncements(
-            client,
-            ANNOUNCEMENTS_CHANNEL_ID
-        );
-    }, 60 * 1000);
-
-    // Règlement
-    setInterval(async () => {
-        rulesCache = await updateRules(
-            client,
-            RULES_CHANNEL_ID
-        );
-    }, 60 * 1000);
-
 });
 
 // Mise à jour automatique du staff
@@ -131,14 +98,6 @@ app.get("/events", (req, res) => {
 
 app.get("/staff", (req, res) => {
     res.json(staffCache);
-});
-
-app.get("/announcements", (req, res) => {
-    res.json(announcementsCache);
-});
-
-app.get("/rules", (req, res) => {
-    res.json(rulesCache);
 });
 
 app.listen(PORT, () => {
