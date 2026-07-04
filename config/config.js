@@ -9,12 +9,12 @@ module.exports = {
             name: "👑 Fondateur",
             id: "1447263311375761460"
         },
-        
+
         {
             name: "🛡 Co-Fondateur",
             id: "1485266632270942288"
         },
-        
+
         {
             name: "✨ Créateur",
             id: "1447264238279196724"
@@ -40,6 +40,8 @@ module.exports = {
             id: "1478757828637360251"
         }
 
-    ]
+    ],
+
+    ANNOUNCEMENTS_CHANNEL_ID: "1447259599811121263"
 
 };
