@@ -12,7 +12,9 @@ const {
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMembers
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent
     ]
 });
 
@@ -22,86 +24,125 @@ app.use(cors());
 
 const PORT = process.env.PORT || 3000;
 
-const { GUILD_ID, STAFF_ROLES } = require("./config/config");
+const {
+    GUILD_ID,
+    STAFF_ROLES,
+    ANNOUNCEMENTS_CHANNEL_ID,
+    RULES_CHANNEL_ID
+} = require("./config/config");
+
 const { updateStaff } = require("./config/staff");
 const { updateEvents } = require("./services/events");
 const { updateStats } = require("./services/stats");
 
+// Nouveaux services
+const { updateAnnouncements } = require("./services/announcements");
+const { updateRules } = require("./services/rules");
+
+// Cache
 let eventsCache = [];
 let staffCache = [];
 let statsCache = {};
+let announcementsCache = [];
+let rulesCache = [];
 
 client.once(Events.ClientReady, async () => {
 
     console.log(`✅ Connecté : ${client.user.tag}`);
-    
-eventsCache = await updateEvents(client, GUILD_ID);
-staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
-statsCache = await updateStats(client, GUILD_ID);
 
-    setInterval(async () => {
+    // Chargement initial
     eventsCache = await updateEvents(client, GUILD_ID);
-}, 5 * 60 * 1000);
-    
+    staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
+    statsCache = await updateStats(client, GUILD_ID);
+
+    announcementsCache = await updateAnnouncements(
+        client,
+        ANNOUNCEMENTS_CHANNEL_ID
+    );
+
+    rulesCache = await updateRules(
+        client,
+        RULES_CHANNEL_ID
+    );
+
+    console.log("✅ Toutes les données sont chargées.");
+
+    // Evénements
+    setInterval(async () => {
+        eventsCache = await updateEvents(client, GUILD_ID);
+    }, 5 * 60 * 1000);
+
+    // Stats
+    setInterval(async () => {
+        statsCache = await updateStats(client, GUILD_ID);
+    }, 5 * 60 * 1000);
+
+    // Staff
     setInterval(async () => {
         staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
     }, 30 * 60 * 1000);
 
+    // Annonces
     setInterval(async () => {
-    statsCache = await updateStats(client, GUILD_ID);
-}, 5 * 60 * 1000);
-    
+        announcementsCache = await updateAnnouncements(
+            client,
+            ANNOUNCEMENTS_CHANNEL_ID
+        );
+    }, 60 * 1000);
+
+    // Règlement
+    setInterval(async () => {
+        rulesCache = await updateRules(
+            client,
+            RULES_CHANNEL_ID
+        );
+    }, 60 * 1000);
+
 });
 
+// Mise à jour automatique du staff
 client.on(Events.GuildMemberUpdate, async () => {
-
-    console.log("🔄 Un membre a été mis à jour");
-
     staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
-
 });
 
 client.on(Events.GuildMemberAdd, async () => {
-
-    console.log("➕ Nouveau membre");
-
     staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
-
+    statsCache = await updateStats(client, GUILD_ID);
 });
 
 client.on(Events.GuildMemberRemove, async () => {
-
-    console.log("➖ Membre parti");
-
     staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
-
+    statsCache = await updateStats(client, GUILD_ID);
 });
+
+// Routes API
+
+app.get("/", (req, res) => {
+    res.send("API La communauté live opérationnelle 🚀");
+});
+
 app.get("/stats", (req, res) => {
     res.json(statsCache);
 });
 
-app.get("/", (req, res) => {
-
-    res.send("API La communauté live opérationnelle");
-
-});
-
 app.get("/events", (req, res) => {
-
     res.json(eventsCache);
-
 });
 
 app.get("/staff", (req, res) => {
-
     res.json(staffCache);
+});
 
+app.get("/announcements", (req, res) => {
+    res.json(announcementsCache);
+});
+
+app.get("/rules", (req, res) => {
+    res.json(rulesCache);
 });
 
 app.listen(PORT, () => {
-
-    console.log(`🌍 Serveur web lancé sur le port ${PORT}`);
-
+    console.log(`🌍 Serveur lancé sur le port ${PORT}`);
 });
 
 client.login(process.env.DISCORD_TOKEN);
