@@ -1,6 +1,6 @@
-async function updateAnnouncements(client) {
+async function updateAnnouncements(client, channelId) {
 
-    const channel = await client.channels.fetch("1447259599811121263");
+    const channel = await client.channels.fetch(channelId).catch(() => null);
 
     if (!channel) return [];
 
@@ -8,20 +8,16 @@ async function updateAnnouncements(client) {
 
     return [...messages.values()]
         .sort((a, b) => b.createdTimestamp - a.createdTimestamp)
-        .map(msg => ({
-
-            id: msg.id,
-
-            author: msg.author.username,
-
-            avatar: msg.author.displayAvatarURL(),
-
-            content: msg.content,
-
-            date: msg.createdAt,
-
-            attachments: msg.attachments.map(att => att.url)
-
+        .map(message => ({
+            id: message.id,
+            author: message.author.username,
+            avatar: message.author.displayAvatarURL({
+                extension: "png",
+                size: 256
+            }),
+            content: message.content,
+            createdAt: message.createdTimestamp,
+            attachments: [...message.attachments.values()].map(file => file.url)
         }));
 
 }
