@@ -27,19 +27,25 @@ const PORT = process.env.PORT || 3000;
 const {
     GUILD_ID,
     STAFF_ROLES,
-    ANNOUNCEMENTS_CHANNEL_ID
+    ANNOUNCEMENTS_CHANNEL_ID,
+    RULES_CHANNEL_ID
 } = require("./config/config");
 
 const { updateStaff } = require("./config/staff");
 const { updateEvents } = require("./services/events");
 const { updateStats } = require("./services/stats");
 const { updateAnnouncements } = require("./services/annonces");
+const { updateRules } = require("./services/regles");
 
 // Cache
 let eventsCache = [];
 let staffCache = [];
 let statsCache = {};
 let announcementsCache = [];
+
+let rulesCache = {
+    content: ""
+};
 
 client.once(Events.ClientReady, async () => {
 
@@ -55,21 +61,42 @@ client.once(Events.ClientReady, async () => {
         ANNOUNCEMENTS_CHANNEL_ID
     );
 
+    rulesCache = await updateRules(
+        client,
+        RULES_CHANNEL_ID
+    );
+
     console.log("✅ Toutes les données sont chargées.");
 
     // Événements
     setInterval(async () => {
-        eventsCache = await updateEvents(client, GUILD_ID);
+
+        eventsCache = await updateEvents(
+            client,
+            GUILD_ID
+        );
+
     }, 5 * 60 * 1000);
 
     // Statistiques
     setInterval(async () => {
-        statsCache = await updateStats(client, GUILD_ID);
+
+        statsCache = await updateStats(
+            client,
+            GUILD_ID
+        );
+
     }, 5 * 60 * 1000);
 
     // Staff
     setInterval(async () => {
-        staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
+
+        staffCache = await updateStaff(
+            client,
+            GUILD_ID,
+            STAFF_ROLES
+        );
+
     }, 30 * 60 * 1000);
 
     // Annonces
@@ -82,26 +109,56 @@ client.once(Events.ClientReady, async () => {
 
     }, 60 * 1000);
 
+    // Règlement
+    setInterval(async () => {
+
+        rulesCache = await updateRules(
+            client,
+            RULES_CHANNEL_ID
+        );
+
+    }, 60 * 1000);
+
 });
 
 // Mise à jour automatique du staff
 client.on(Events.GuildMemberUpdate, async () => {
 
-    staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
+    staffCache = await updateStaff(
+        client,
+        GUILD_ID,
+        STAFF_ROLES
+    );
 
 });
 
 client.on(Events.GuildMemberAdd, async () => {
 
-    staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
-    statsCache = await updateStats(client, GUILD_ID);
+    staffCache = await updateStaff(
+        client,
+        GUILD_ID,
+        STAFF_ROLES
+    );
+
+    statsCache = await updateStats(
+        client,
+        GUILD_ID
+    );
 
 });
 
 client.on(Events.GuildMemberRemove, async () => {
 
-    staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
-    statsCache = await updateStats(client, GUILD_ID);
+    staffCache = await updateStaff(
+        client,
+        GUILD_ID,
+        STAFF_ROLES
+    );
+
+    statsCache = await updateStats(
+        client,
+        GUILD_ID
+    );
 
 });
 
@@ -109,7 +166,9 @@ client.on(Events.GuildMemberRemove, async () => {
 
 app.get("/", (req, res) => {
 
-    res.send("API La communauté live opérationnelle 🚀");
+    res.send(
+        "API La communauté live opérationnelle 🚀"
+    );
 
 });
 
@@ -137,9 +196,17 @@ app.get("/annonces", (req, res) => {
 
 });
 
+app.get("/regles", (req, res) => {
+
+    res.json(rulesCache);
+
+});
+
 app.listen(PORT, () => {
 
-    console.log(`🌍 Serveur lancé sur le port ${PORT}`);
+    console.log(
+        `🌍 Serveur lancé sur le port ${PORT}`
+    );
 
 });
 
