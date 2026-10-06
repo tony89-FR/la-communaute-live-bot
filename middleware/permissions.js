@@ -14,6 +14,7 @@ function getMemberPermissions(member) {
 
     const permissions = new Set();
 
+
     // ----------------------------------------------
     // @everyone
     // ----------------------------------------------
@@ -30,22 +31,30 @@ function getMemberPermissions(member) {
 
 
     // ----------------------------------------------
-    // RÔLES DU MEMBRE
+    // RÔLES DISCORD DU MEMBRE
     // ----------------------------------------------
 
-    if (!member || !member.roles) {
-
+    if (!member) {
         return [...permissions];
-
     }
 
 
-    for (const role of member.roles) {
+    const discordRoles =
+        member.roles?.cache;
+
+
+    if (!discordRoles) {
+        return [...permissions];
+    }
+
+
+    for (const role of discordRoles.values()) {
 
         const roleConfig =
             Object.values(ROLES).find(
                 config => config.id === role.id
             );
+
 
         if (!roleConfig) {
             continue;
@@ -82,12 +91,9 @@ function hasPermission(member, permission) {
 
 function requirePermission(permission) {
 
-    return async (req, res, next) => {
+    return (req, res, next) => {
 
         try {
-
-            // Le membre Discord doit avoir
-            // été récupéré avant ce middleware.
 
             if (!req.discordMember) {
 
