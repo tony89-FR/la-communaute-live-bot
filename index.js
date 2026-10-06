@@ -10,27 +10,6 @@ const {
     Events
 } = require("discord.js");
 
-const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent
-    ]
-});
-
-const app = express();
-
-const PORT = process.env.PORT || 3000;
-
-
-// ======================================================
-// CONFIGURATION
-// ======================================================
-
-const FRONTEND_URL =
-    "https://tony89-fr.github.io";
-
 const {
     GUILD_ID,
     STAFF_ROLES,
@@ -38,30 +17,14 @@ const {
     RULES_CHANNEL_ID
 } = require("./config/config");
 
+const { updateStaff } = require("./config/staff");
+const { updateEvents } = require("./services/events");
+const { updateStats } = require("./services/stats");
+const { updateAnnouncements } = require("./services/annonces");
+const { updateRules } = require("./services/regles");
 
-// ======================================================
-// SERVICES
-// ======================================================
-
-const { updateStaff } =
-    require("./config/staff");
-
-const { updateEvents } =
-    require("./services/events");
-
-const { updateStats } =
-    require("./services/stats");
-
-const { updateAnnouncements } =
-    require("./services/annonces");
-
-const { updateRules } =
-    require("./services/regles");
-
-
-// ======================================================
-// PERMISSIONS
-// ======================================================
+const PERMISSIONS =
+    require("./config/permissions");
 
 const {
     getMemberPermissions
@@ -72,23 +35,60 @@ const {
 } = require("./middleware/discordAuth");
 
 
-// ======================================================
-// CORS
-// ======================================================
+const client = new Client({
 
-app.use(cors({
-    origin: FRONTEND_URL,
-    methods: ["GET", "POST"],
-    allowedHeaders: [
-        "Content-Type",
-        "Authorization"
+    intents: [
+
+        GatewayIntentBits.Guilds,
+
+        GatewayIntentBits.GuildMembers,
+
+        GatewayIntentBits.GuildMessages,
+
+        GatewayIntentBits.MessageContent
+
     ]
-}));
+
+});
 
 
-// ======================================================
-// CACHE
-// ======================================================
+const app = express();
+
+const PORT =
+    process.env.PORT || 3000;
+
+const FRONTEND_URL =
+    "https://tony89-fr.github.io";
+
+
+/* ======================================================
+   CORS
+====================================================== */
+
+app.use(
+
+    cors({
+
+        origin: FRONTEND_URL,
+
+        methods: [
+            "GET",
+            "POST"
+        ],
+
+        allowedHeaders: [
+            "Content-Type",
+            "Authorization"
+        ]
+
+    })
+
+);
+
+
+/* ======================================================
+   CACHE
+====================================================== */
 
 let eventsCache = [];
 
@@ -103,17 +103,22 @@ let rulesCache = {
 };
 
 
-// ======================================================
-// OUTILS AUTHENTIFICATION
-// ======================================================
+/* ======================================================
+   AUTHENTIFICATION
+====================================================== */
 
 function base64urlEncode(value) {
 
     return Buffer
+
         .from(value)
+
         .toString("base64")
+
         .replace(/\+/g, "-")
+
         .replace(/\//g, "_")
+
         .replace(/=+$/, "");
 
 }
@@ -121,17 +126,18 @@ function base64urlEncode(value) {
 
 function base64urlDecode(value) {
 
-    value = value
-        .replace(/-/g, "+")
-        .replace(/_/g, "/");
+    value =
+        value
+            .replace(/-/g, "+")
+            .replace(/_/g, "/");
 
-
-    while (value.length % 4) {
+    while (
+        value.length % 4
+    ) {
 
         value += "=";
 
     }
-
 
     return Buffer
         .from(value, "base64")
@@ -143,14 +149,20 @@ function base64urlDecode(value) {
 function createSignature(data) {
 
     return crypto
+
         .createHmac(
             "sha256",
             process.env.SESSION_SECRET
         )
+
         .update(data)
+
         .digest("base64")
+
         .replace(/\+/g, "-")
+
         .replace(/\//g, "_")
+
         .replace(/=+$/, "");
 
 }
@@ -163,14 +175,14 @@ function createToken(payload) {
             JSON.stringify(payload)
         );
 
-
     const signature =
         createSignature(
             encodedPayload
         );
 
-
-    return `${encodedPayload}.${signature}`;
+    return (
+        `${encodedPayload}.${signature}`
+    );
 
 }
 
@@ -191,7 +203,9 @@ function verifyToken(token) {
         token.split(".");
 
 
-    if (parts.length !== 2) {
+    if (
+        parts.length !== 2
+    ) {
 
         return null;
 
@@ -210,24 +224,29 @@ function verifyToken(token) {
         );
 
 
-    try {
+    if (
+        signature.length !==
+        expectedSignature.length
+    ) {
 
-        const signaturesMatch =
-            crypto.timingSafeEqual(
-                Buffer.from(signature),
-                Buffer.from(expectedSignature)
-            );
-
-
-        if (!signaturesMatch) {
-
-            return null;
-
-        }
+        return null;
 
     }
 
-    catch (error) {
+
+    const signaturesMatch =
+        crypto.timingSafeEqual(
+
+            Buffer.from(signature),
+
+            Buffer.from(
+                expectedSignature
+            )
+
+        );
+
+
+    if (!signaturesMatch) {
 
         return null;
 
@@ -256,9 +275,7 @@ function verifyToken(token) {
 
         return payload;
 
-    }
-
-    catch (error) {
+    } catch (error) {
 
         return null;
 
@@ -267,9 +284,9 @@ function verifyToken(token) {
 }
 
 
-// ======================================================
-// AUTHENTIFICATION DISCORD
-// ======================================================
+/* ======================================================
+   AUTH DISCORD
+====================================================== */
 
 const discordAuth =
     requireDiscordMember(
@@ -279,9 +296,9 @@ const discordAuth =
     );
 
 
-// ======================================================
-// ÉTAT OAUTH2
-// ======================================================
+/* ======================================================
+   OAUTH2
+====================================================== */
 
 function createOAuthState() {
 
@@ -294,18 +311,20 @@ function createOAuthState() {
 
         exp:
             Date.now() +
-            (10 * 60 * 1000)
+            (
+                10 *
+                60 *
+                1000
+            )
 
     });
 
 }
 
 
-// ======================================================
-// DISCORD OAUTH2
-// ======================================================
-
-// Début de la connexion Discord
+/* ======================================================
+   CONNEXION DISCORD
+====================================================== */
 
 app.get(
     "/auth/discord",
@@ -337,7 +356,8 @@ app.get(
 
 
         const discordURL =
-            `https://discord.com/oauth2/authorize?${params.toString()}`;
+            "https://discord.com/oauth2/authorize?" +
+            params.toString();
 
 
         res.redirect(
@@ -348,9 +368,9 @@ app.get(
 );
 
 
-// ======================================================
-// RETOUR DISCORD
-// ======================================================
+/* ======================================================
+   CALLBACK DISCORD
+====================================================== */
 
 app.get(
     "/auth/discord/callback",
@@ -386,10 +406,6 @@ app.get(
             }
 
 
-            // ==========================================
-            // VÉRIFICATION DU STATE
-            // ==========================================
-
             const statePayload =
                 verifyToken(state);
 
@@ -405,16 +421,15 @@ app.get(
             }
 
 
-            // ==========================================
-            // ÉCHANGE DU CODE
-            // ==========================================
-
             const tokenResponse =
                 await fetch(
+
                     "https://discord.com/api/oauth2/token",
+
                     {
 
-                        method: "POST",
+                        method:
+                            "POST",
 
                         headers: {
 
@@ -444,20 +459,16 @@ app.get(
                             })
 
                     }
+
                 );
 
 
             if (!tokenResponse.ok) {
 
-                const errorText =
-                    await tokenResponse.text();
-
-
                 console.error(
                     "❌ Erreur token Discord :",
-                    errorText
+                    await tokenResponse.text()
                 );
-
 
                 return res
                     .status(500)
@@ -472,13 +483,11 @@ app.get(
                 await tokenResponse.json();
 
 
-            // ==========================================
-            // PROFIL DISCORD
-            // ==========================================
-
             const userResponse =
                 await fetch(
+
                     "https://discord.com/api/users/@me",
+
                     {
 
                         headers: {
@@ -489,15 +498,11 @@ app.get(
                         }
 
                     }
+
                 );
 
 
             if (!userResponse.ok) {
-
-                console.error(
-                    "❌ Impossible de récupérer le profil Discord."
-                );
-
 
                 return res
                     .status(500)
@@ -516,10 +521,6 @@ app.get(
                 `🔐 Connexion Discord : ${user.username} (${user.id})`
             );
 
-
-            // ==========================================
-            // CRÉATION DE NOTRE SESSION
-            // ==========================================
 
             const sessionToken =
                 createToken({
@@ -540,26 +541,30 @@ app.get(
 
                     exp:
                         Date.now() +
-                        (30 * 24 * 60 * 60 * 1000)
+                        (
+                            30 *
+                            24 *
+                            60 *
+                            60 *
+                            1000
+                        )
 
                 });
 
 
-            // ==========================================
-            // RETOUR VERS LE SITE
-            // ==========================================
-
             const redirectURL =
-                `${FRONTEND_URL}/#discord_token=${encodeURIComponent(sessionToken)}`;
+                `${FRONTEND_URL}/#discord_token=` +
+                encodeURIComponent(
+                    sessionToken
+                );
 
 
             res.redirect(
                 redirectURL
             );
 
-        }
 
-        catch (error) {
+        } catch (error) {
 
             console.error(
                 "❌ Erreur OAuth2 :",
@@ -579,9 +584,9 @@ app.get(
 );
 
 
-// ======================================================
-// VÉRIFIER LA SESSION CONNECTÉE
-// ======================================================
+/* ======================================================
+   AUTH / ME
+====================================================== */
 
 app.get(
     "/auth/me",
@@ -591,18 +596,8 @@ app.get(
             req.headers.authorization;
 
 
-        if (!authorization) {
-
-            return res
-                .status(401)
-                .json({
-                    connected: false
-                });
-
-        }
-
-
         if (
+            !authorization ||
             !authorization.startsWith(
                 "Bearer "
             )
@@ -611,7 +606,10 @@ app.get(
             return res
                 .status(401)
                 .json({
-                    connected: false
+
+                    connected:
+                        false
+
                 });
 
         }
@@ -630,7 +628,10 @@ app.get(
             return res
                 .status(401)
                 .json({
-                    connected: false
+
+                    connected:
+                        false
+
                 });
 
         }
@@ -638,7 +639,8 @@ app.get(
 
         res.json({
 
-            connected: true,
+            connected:
+                true,
 
             user: {
 
@@ -662,9 +664,9 @@ app.get(
 );
 
 
-// ======================================================
-// STATUT AUTHENTIFICATION
-// ======================================================
+/* ======================================================
+   AUTH / STATUS
+====================================================== */
 
 app.get(
     "/auth/status",
@@ -672,9 +674,11 @@ app.get(
 
         res.json({
 
-            oauth2: true,
+            oauth2:
+                true,
 
-            discord: true
+            discord:
+                true
 
         });
 
@@ -682,13 +686,16 @@ app.get(
 );
 
 
-// ======================================================
-// TEST PERMISSIONS
-// ======================================================
+/* ======================================================
+   AUTH / PERMISSIONS
+====================================================== */
 
 app.get(
+
     "/auth/permissions",
+
     discordAuth,
+
     (req, res) => {
 
         try {
@@ -703,52 +710,56 @@ app.get(
                 req.discordMember
                     .roles
                     .cache
+
                     .filter(
                         role =>
                             role.id !== GUILD_ID
                     )
+
+                    .sort(
+                        (a, b) =>
+                            b.position -
+                            a.position
+                    )
+
                     .map(
                         role => ({
+
                             id:
                                 role.id,
 
                             name:
                                 role.name
+
                         })
                     );
 
 
             res.json({
 
-                connected: true,
+                connected:
+                    true,
 
                 user: {
 
                     id:
-                        req.discordMember
-                            .user
-                            .id,
+                        req.discordMember.user.id,
 
                     username:
-                        req.discordMember
-                            .user
-                            .username
+                        req.discordMember.user.username
 
                 },
 
                 roles:
-
                     roles,
 
                 permissions:
-
                     permissions
 
             });
 
-        }
 
-        catch (error) {
+        } catch (error) {
 
             console.error(
                 "❌ Erreur permissions :",
@@ -768,331 +779,189 @@ app.get(
         }
 
     }
+
 );
 
 
-// ======================================================
-// BOT DISCORD
-// ======================================================
+/* ======================================================
+   LISTE DES MEMBRES
+====================================================== */
 
-client.once(
-    Events.ClientReady,
-    async () => {
+app.get(
 
-        console.log(
-            `✅ Connecté : ${client.user.tag}`
-        );
+    "/members",
 
+    discordAuth,
 
-        // ==============================================
-        // CHARGEMENT INITIAL
-        // ==============================================
-
-        eventsCache =
-            await updateEvents(
-                client,
-                GUILD_ID
-            );
-
-
-        staffCache =
-            await updateStaff(
-                client,
-                GUILD_ID,
-                STAFF_ROLES
-            );
-
-
-        statsCache =
-            await updateStats(
-                client,
-                GUILD_ID
-            );
-
-
-        announcementsCache =
-            await updateAnnouncements(
-                client,
-                ANNOUNCEMENTS_CHANNEL_ID
-            );
-
-
-        rulesCache =
-            await updateRules(
-                client,
-                RULES_CHANNEL_ID
-            );
-
-
-        console.log(
-            "✅ Toutes les données sont chargées."
-        );
-
-
-        // ==============================================
-        // ÉVÉNEMENTS
-        // ==============================================
-
-        setInterval(
-            async () => {
-
-                try {
-
-                    eventsCache =
-                        await updateEvents(
-                            client,
-                            GUILD_ID
-                        );
-
-                }
-
-                catch (error) {
-
-                    console.error(
-                        "❌ Erreur mise à jour événements :",
-                        error
-                    );
-
-                }
-
-            },
-            5 * 60 * 1000
-        );
-
-
-        // ==============================================
-        // STATISTIQUES
-        // ==============================================
-
-        setInterval(
-            async () => {
-
-                try {
-
-                    statsCache =
-                        await updateStats(
-                            client,
-                            GUILD_ID
-                        );
-
-                }
-
-                catch (error) {
-
-                    console.error(
-                        "❌ Erreur mise à jour statistiques :",
-                        error
-                    );
-
-                }
-
-            },
-            5 * 60 * 1000
-        );
-
-
-        // ==============================================
-        // STAFF
-        // ==============================================
-
-        setInterval(
-            async () => {
-
-                try {
-
-                    staffCache =
-                        await updateStaff(
-                            client,
-                            GUILD_ID,
-                            STAFF_ROLES
-                        );
-
-                }
-
-                catch (error) {
-
-                    console.error(
-                        "❌ Erreur mise à jour staff :",
-                        error
-                    );
-
-                }
-
-            },
-            30 * 60 * 1000
-        );
-
-
-        // ==============================================
-        // ANNONCES
-        // ==============================================
-
-        setInterval(
-            async () => {
-
-                try {
-
-                    announcementsCache =
-                        await updateAnnouncements(
-                            client,
-                            ANNOUNCEMENTS_CHANNEL_ID
-                        );
-
-                }
-
-                catch (error) {
-
-                    console.error(
-                        "❌ Erreur mise à jour annonces :",
-                        error
-                    );
-
-                }
-
-            },
-            60 * 1000
-        );
-
-
-        // ==============================================
-        // RÈGLEMENT
-        // ==============================================
-
-        setInterval(
-            async () => {
-
-                try {
-
-                    rulesCache =
-                        await updateRules(
-                            client,
-                            RULES_CHANNEL_ID
-                        );
-
-                }
-
-                catch (error) {
-
-                    console.error(
-                        "❌ Erreur mise à jour règlement :",
-                        error
-                    );
-
-                }
-
-            },
-            60 * 1000
-        );
-
-    }
-);
-
-
-// ======================================================
-// MISE À JOUR AUTOMATIQUE DU STAFF
-// ======================================================
-
-client.on(
-    Events.GuildMemberUpdate,
-    async () => {
+    async (req, res) => {
 
         try {
 
-            staffCache =
-                await updateStaff(
-                    client,
-                    GUILD_ID,
-                    STAFF_ROLES
-                );
-
-        }
-
-        catch (error) {
-
-            console.error(
-                "❌ Erreur mise à jour staff :",
-                error
-            );
-
-        }
-
-    }
-);
-
-
-client.on(
-    Events.GuildMemberAdd,
-    async () => {
-
-        try {
-
-            staffCache =
-                await updateStaff(
-                    client,
-                    GUILD_ID,
-                    STAFF_ROLES
+            const permissions =
+                getMemberPermissions(
+                    req.discordMember
                 );
 
 
-            statsCache =
-                await updateStats(
-                    client,
+            if (
+                !permissions.includes(
+                    PERMISSIONS.MEMBER_LIST
+                )
+            ) {
+
+                return res
+                    .status(403)
+                    .json({
+
+                        error:
+                            "Vous n'avez pas la permission nécessaire."
+
+                    });
+
+            }
+
+
+            const guild =
+                await client.guilds.fetch(
                     GUILD_ID
                 );
 
-        }
 
-        catch (error) {
+            await guild.members.fetch();
+
+
+            const members =
+                [
+                    ...guild
+                        .members
+                        .cache
+                        .values()
+                ]
+
+                .map(
+                    member => {
+
+                        const roles =
+
+                            member
+                                .roles
+                                .cache
+
+                                .filter(
+                                    role =>
+                                        role.id !==
+                                        GUILD_ID
+                                )
+
+                                .sort(
+                                    (a, b) =>
+                                        b.position -
+                                        a.position
+                                )
+
+                                .map(
+                                    role => ({
+
+                                        id:
+                                            role.id,
+
+                                        name:
+                                            role.name,
+
+                                        color:
+                                            role.hexColor
+
+                                    })
+                                );
+
+
+                        return {
+
+                            id:
+                                member.user.id,
+
+                            username:
+                                member.user.username,
+
+                            displayName:
+                                member.displayName,
+
+                            avatar:
+                                member.user.displayAvatarURL({
+
+                                    extension:
+                                        "png",
+
+                                    size:
+                                        128
+
+                                }),
+
+                            bot:
+                                member.user.bot,
+
+                            roles:
+                                roles
+
+                        };
+
+                    }
+
+                )
+
+                .sort(
+
+                    (a, b) =>
+                        a.displayName.localeCompare(
+                            b.displayName,
+                            "fr",
+                            {
+                                sensitivity:
+                                    "base"
+                            }
+                        )
+
+                );
+
+
+            res.json({
+
+                count:
+                    members.length,
+
+                members:
+                    members
+
+            });
+
+
+        } catch (error) {
 
             console.error(
-                "❌ Erreur arrivée membre :",
+                "❌ Erreur liste membres :",
                 error
             );
+
+
+            res
+                .status(500)
+                .json({
+
+                    error:
+                        "Impossible de récupérer les membres."
+
+                });
 
         }
 
     }
+
 );
 
 
-client.on(
-    Events.GuildMemberRemove,
-    async () => {
-
-        try {
-
-            staffCache =
-                await updateStaff(
-                    client,
-                    GUILD_ID,
-                    STAFF_ROLES
-                );
-
-
-            statsCache =
-                await updateStats(
-                    client,
-                    GUILD_ID
-                );
-
-        }
-
-        catch (error) {
-
-            console.error(
-                "❌ Erreur départ membre :",
-                error
-            );
-
-        }
-
-    }
-);
-
-
-// ======================================================
-// ROUTES API
-// ======================================================
+/* ======================================================
+   ROUTES PUBLIQUES
+====================================================== */
 
 app.get(
     "/",
@@ -1166,9 +1035,318 @@ app.get(
 );
 
 
-// ======================================================
-// SERVEUR
-// ======================================================
+/* ======================================================
+   BOT PRÊT
+====================================================== */
+
+client.once(
+    Events.ClientReady,
+    async () => {
+
+        console.log(
+            `✅ Connecté : ${client.user.tag}`
+        );
+
+
+        try {
+
+            eventsCache =
+                await updateEvents(
+                    client,
+                    GUILD_ID
+                );
+
+
+            staffCache =
+                await updateStaff(
+                    client,
+                    GUILD_ID,
+                    STAFF_ROLES
+                );
+
+
+            statsCache =
+                await updateStats(
+                    client,
+                    GUILD_ID
+                );
+
+
+            announcementsCache =
+                await updateAnnouncements(
+                    client,
+                    ANNOUNCEMENTS_CHANNEL_ID
+                );
+
+
+            rulesCache =
+                await updateRules(
+                    client,
+                    RULES_CHANNEL_ID
+                );
+
+
+            console.log(
+                "✅ Toutes les données sont chargées."
+            );
+
+
+        } catch (error) {
+
+            console.error(
+                "❌ Erreur chargement initial :",
+                error
+            );
+
+        }
+
+
+        /* ÉVÉNEMENTS */
+
+        setInterval(
+            async () => {
+
+                try {
+
+                    eventsCache =
+                        await updateEvents(
+                            client,
+                            GUILD_ID
+                        );
+
+                } catch (error) {
+
+                    console.error(
+                        "❌ Erreur mise à jour événements :",
+                        error
+                    );
+
+                }
+
+            },
+            5 * 60 * 1000
+        );
+
+
+        /* STATS */
+
+        setInterval(
+            async () => {
+
+                try {
+
+                    statsCache =
+                        await updateStats(
+                            client,
+                            GUILD_ID
+                        );
+
+                } catch (error) {
+
+                    console.error(
+                        "❌ Erreur mise à jour statistiques :",
+                        error
+                    );
+
+                }
+
+            },
+            5 * 60 * 1000
+        );
+
+
+        /* STAFF */
+
+        setInterval(
+            async () => {
+
+                try {
+
+                    staffCache =
+                        await updateStaff(
+                            client,
+                            GUILD_ID,
+                            STAFF_ROLES
+                        );
+
+                } catch (error) {
+
+                    console.error(
+                        "❌ Erreur mise à jour staff :",
+                        error
+                    );
+
+                }
+
+            },
+            30 * 60 * 1000
+        );
+
+
+        /* ANNONCES */
+
+        setInterval(
+            async () => {
+
+                try {
+
+                    announcementsCache =
+                        await updateAnnouncements(
+                            client,
+                            ANNOUNCEMENTS_CHANNEL_ID
+                        );
+
+                } catch (error) {
+
+                    console.error(
+                        "❌ Erreur mise à jour annonces :",
+                        error
+                    );
+
+                }
+
+            },
+            60 * 1000
+        );
+
+
+        /* RÈGLEMENT */
+
+        setInterval(
+            async () => {
+
+                try {
+
+                    rulesCache =
+                        await updateRules(
+                            client,
+                            RULES_CHANNEL_ID
+                        );
+
+                } catch (error) {
+
+                    console.error(
+                        "❌ Erreur mise à jour règlement :",
+                        error
+                    );
+
+                }
+
+            },
+            60 * 1000
+        );
+
+    }
+);
+
+
+/* ======================================================
+   MEMBRE AJOUTÉ
+====================================================== */
+
+client.on(
+    Events.GuildMemberAdd,
+    async () => {
+
+        try {
+
+            staffCache =
+                await updateStaff(
+                    client,
+                    GUILD_ID,
+                    STAFF_ROLES
+                );
+
+
+            statsCache =
+                await updateStats(
+                    client,
+                    GUILD_ID
+                );
+
+        } catch (error) {
+
+            console.error(
+                "❌ Erreur arrivée membre :",
+                error
+            );
+
+        }
+
+    }
+);
+
+
+/* ======================================================
+   MEMBRE RETIRÉ
+====================================================== */
+
+client.on(
+    Events.GuildMemberRemove,
+    async () => {
+
+        try {
+
+            staffCache =
+                await updateStaff(
+                    client,
+                    GUILD_ID,
+                    STAFF_ROLES
+                );
+
+
+            statsCache =
+                await updateStats(
+                    client,
+                    GUILD_ID
+                );
+
+        } catch (error) {
+
+            console.error(
+                "❌ Erreur départ membre :",
+                error
+            );
+
+        }
+
+    }
+);
+
+
+/* ======================================================
+   RÔLE MEMBRE MODIFIÉ
+====================================================== */
+
+client.on(
+    Events.GuildMemberUpdate,
+    async () => {
+
+        try {
+
+            staffCache =
+                await updateStaff(
+                    client,
+                    GUILD_ID,
+                    STAFF_ROLES
+                );
+
+        } catch (error) {
+
+            console.error(
+                "❌ Erreur mise à jour rôle :",
+                error
+            );
+
+        }
+
+    }
+);
+
+
+/* ======================================================
+   SERVEUR
+====================================================== */
 
 app.listen(
     PORT,
@@ -1182,9 +1360,9 @@ app.listen(
 );
 
 
-// ======================================================
-// CONNEXION BOT
-// ======================================================
+/* ======================================================
+   CONNEXION BOT
+====================================================== */
 
 client.login(
     process.env.DISCORD_TOKEN
