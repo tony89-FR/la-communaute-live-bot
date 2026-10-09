@@ -686,101 +686,62 @@ app.get(
 );
 
 
+```js
 /* ======================================================
    AUTH / PERMISSIONS
 ====================================================== */
 
 app.get(
-
     "/auth/permissions",
-
     discordAuth,
-
     (req, res) => {
-
         try {
+            const member = req.discordMember;
+            const user = member.user;
 
-            const permissions =
-                getMemberPermissions(
-                    req.discordMember
-                );
+            const permissions = getMemberPermissions(member);
 
-
-            const roles =
-                req.discordMember
-                    .roles
-                    .cache
-
-                    .filter(
-                        role =>
-                            role.id !== GUILD_ID
-                    )
-
-                    .sort(
-                        (a, b) =>
-                            b.position -
-                            a.position
-                    )
-
-                    .map(
-                        role => ({
-
-                            id:
-                                role.id,
-
-                            name:
-                                role.name
-
-                        })
-                    );
-
+            const roles = member.roles.cache
+                .filter(role => role.id !== GUILD_ID)
+                .sort((a, b) => b.position - a.position)
+                .map(role => ({
+                    id: role.id,
+                    name: role.name
+                }));
 
             res.json({
-
-                connected:
-                    true,
+                connected: true,
 
                 user: {
+                    id: user.id,
+                    username: user.username,
+                    globalName: user.globalName || user.username,
 
-                    id:
-                        req.discordMember.user.id,
-
-                    username:
-                        req.discordMember.user.username
-
+                    // URL complète de la vraie photo Discord
+                    avatar: user.displayAvatarURL({
+                        extension: "png",
+                        size: 256,
+                        forceStatic: true
+                    })
                 },
 
-                roles:
-                    roles,
-
-                permissions:
-                    permissions
-
+                roles,
+                permissions
             });
 
-
         } catch (error) {
-
             console.error(
                 "❌ Erreur permissions :",
                 error
             );
 
-
-            res
-                .status(500)
-                .json({
-
-                    error:
-                        "Impossible de récupérer les permissions."
-
-                });
-
+            res.status(500).json({
+                error: "Impossible de récupérer les permissions."
+            });
         }
-
     }
-
 );
+```
 
 
 /* ======================================================
