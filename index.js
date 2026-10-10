@@ -327,6 +327,73 @@ app.get("/auth/permissions", discordAuth, (req, res) => {
 // LISTE DES MEMBRES
 // ======================================================
 
+let membersListCache = null;
+let membersListCacheAt = 0;
+let membersListPromise = null;
+
+const MEMBERS_CACHE_TTL = 60 * 1000;
+
+// Récupération des membres sans utiliser le fetch global
+// WebSocket qui déclenchait la limitation de débit.
+async function readGuildMembers(guild) {
+    const allMembers = new Map();
+    let after;
+
+    while (true) {
+        const options = { limit: 1000 };
+
+        if (after) {
+            options.after = after;
+        }
+
+        const batch = await guild.members.list(options);
+
+        if (batch.size === 0) {
+            break;
+        }
+
+        for (const member of batch.values()) {
+            allMembers.set(member.id, member);
+        }
+
+        const lastMember = batch.last();
+
+        if (!lastMember || batch.size < 1000) {
+            break;
+        }
+
+        after = lastMember.id;
+    }
+
+    return [...allMembers.values()]
+        .map(member => ({
+            id: member.user.id,
+            username: member.user.username,
+            globalName: member.user.globalName || member.user.username,
+            displayName: member.displayName,
+            avatar: member.user.displayAvatarURL({
+                extension: "png",
+                size: 128
+            }),
+            bot: member.user.bot,
+            roles: member.roles.cache
+                .filter(role => role.id !== GUILD_ID)
+                .sort((a, b) => b.position - a.position)
+                .map(role => ({
+                    id: role.id,
+                    name: role.name,
+                    color: role.hexColor
+                }))
+        }))
+        .sort((a, b) =>
+            a.displayName.localeCompare(
+                b.displayName,
+                "fr",
+                { sensitivity: "base" }
+            )
+        );
+}
+
 app.get("/members", discordAuth, async (req, res) => {
     try {
         const permissions = getMemberPermissions(req.discordMember);
@@ -337,48 +404,53 @@ app.get("/members", discordAuth, async (req, res) => {
             });
         }
 
-        const guild = await client.guilds.fetch(GUILD_ID);
-        await guild.members.fetch();
+        // Réutilise les données pendant 60 secondes.
+        if (
+            membersListCache &&
+            Date.now() - membersListCacheAt < MEMBERS_CACHE_TTL
+        ) {
+            return res.json({
+                count: membersListCache.length,
+                members: membersListCache
+            });
+        }
 
-        const members = [...guild.members.cache.values()]
-            .map(member => ({
-                id: member.user.id,
-                username: member.user.username,
-                displayName: member.displayName,
-                avatar: member.user.displayAvatarURL({
-                    extension: "png",
-                    size: 128
-                }),
-                bot: member.user.bot,
-                roles: member.roles.cache
-                    .filter(role => role.id !== GUILD_ID)
-                    .sort((a, b) => b.position - a.position)
-                    .map(role => ({
-                        id: role.id,
-                        name: role.name,
-                        color: role.hexColor
-                    }))
-            }))
-            .sort((a, b) =>
-                a.displayName.localeCompare(
-                    b.displayName,
-                    "fr",
-                    { sensitivity: "base" }
-                )
-            );
+        // Évite plusieurs récupérations simultanées.
+        if (!membersListPromise) {
+            membersListPromise = (async () => {
+                const guild = await client.guilds.fetch(GUILD_ID);
+                return await readGuildMembers(guild);
+            })();
 
-        res.json({
+            membersListPromise = membersListPromise
+                .then(members => {
+                    membersListCache = members;
+                    membersListCacheAt = Date.now();
+                    return members;
+                })
+                .finally(() => {
+                    membersListPromise = null;
+                });
+        }
+
+        const members = await membersListPromise;
+
+        return res.json({
             count: members.length,
             members
         });
     } catch (error) {
         console.error("Erreur liste membres :", error);
 
-        res.status(500).json({
-            error: "Impossible de récupérer les membres."
+        return res.status(500).json({
+            error: "Impossible de récupérer les membres. Réessaie dans un instant."
         });
     }
 });
+
+// ======================================================
+// ROUTES PUBLIQUES DU SITE
+// ======================================================
 
 // ======================================================
 // ROUTES PUBLIQUES DU SITE
