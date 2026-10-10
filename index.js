@@ -3,7 +3,13 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
-const { Client, GatewayIntentBits, Events } = require("discord.js");
+
+const {
+    Client,
+    GatewayIntentBits,
+    Events,
+    PermissionFlagsBits
+} = require("discord.js");
 
 const {
     GUILD_ID,
@@ -17,6 +23,7 @@ const { updateEvents } = require("./services/events");
 const { updateStats } = require("./services/stats");
 const { updateAnnouncements } = require("./services/annonces");
 const { updateRules } = require("./services/regles");
+
 const PERMISSIONS = require("./config/permissions");
 const { getMemberPermissions } = require("./middleware/permissions");
 const { requireDiscordMember } = require("./middleware/discordAuth");
@@ -36,9 +43,15 @@ const FRONTEND_URL = "https://tony89-fr.github.io";
 
 app.use(cors({
     origin: FRONTEND_URL,
-    methods: ["GET", "POST"],
+    methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"]
 }));
+
+app.use(express.json({ limit: "25kb" }));
+
+// ======================================================
+// CACHES
+// ======================================================
 
 let eventsCache = [];
 let staffCache = [];
@@ -46,12 +59,23 @@ let statsCache = {};
 let announcementsCache = [];
 let rulesCache = { content: "" };
 
+let membersListCache = null;
+let membersListCacheAt = 0;
+let membersListPromise = null;
+
+const MEMBERS_CACHE_TTL = 60 * 1000;
+
+// Les bans temporaires actifs dans ce processus.
+const temporaryBanTimers = new Map();
+const MAX_TEMP_BAN_MINUTES = 7 * 24 * 60;
+
 // ======================================================
-// SIGNATURE ET VÉRIFICATION DES JETONS DE SESSION
+// SESSIONS DISCORD
 // ======================================================
 
 function base64urlEncode(value) {
-    return Buffer.from(value).toString("base64")
+    return Buffer.from(value)
+        .toString("base64")
         .replace(/\+/g, "-")
         .replace(/\//g, "_")
         .replace(/=+$/, "");
@@ -59,16 +83,21 @@ function base64urlEncode(value) {
 
 function base64urlDecode(value) {
     value = value.replace(/-/g, "+").replace(/_/g, "/");
-    while (value.length % 4) value += "=";
+
+    while (value.length % 4) {
+        value += "=";
+    }
+
     return Buffer.from(value, "base64").toString("utf8");
 }
 
 function createSignature(data) {
     if (!process.env.SESSION_SECRET) {
-        throw new Error("La variable SESSION_SECRET n'est pas configurée.");
+        throw new Error("SESSION_SECRET n'est pas configurée.");
     }
 
-    return crypto.createHmac("sha256", process.env.SESSION_SECRET)
+    return crypto
+        .createHmac("sha256", process.env.SESSION_SECRET)
         .update(data)
         .digest("base64")
         .replace(/\+/g, "-")
@@ -77,17 +106,27 @@ function createSignature(data) {
 }
 
 function createToken(payload) {
-    const encodedPayload = base64urlEncode(JSON.stringify(payload));
+    const encodedPayload = base64urlEncode(
+        JSON.stringify(payload)
+    );
+
     return `${encodedPayload}.${createSignature(encodedPayload)}`;
 }
 
 function verifyToken(token) {
-    if (!token || !process.env.SESSION_SECRET || typeof token !== "string") {
+    if (
+        !token ||
+        !process.env.SESSION_SECRET ||
+        typeof token !== "string"
+    ) {
         return null;
     }
 
     const parts = token.split(".");
-    if (parts.length !== 2) return null;
+
+    if (parts.length !== 2) {
+        return null;
+    }
 
     const [encodedPayload, signature] = parts;
 
@@ -102,13 +141,22 @@ function verifyToken(token) {
     const received = Buffer.from(signature);
     const expected = Buffer.from(expectedSignature);
 
-    if (received.length !== expected.length) return null;
-    if (!crypto.timingSafeEqual(received, expected)) return null;
+    if (received.length !== expected.length) {
+        return null;
+    }
+
+    if (!crypto.timingSafeEqual(received, expected)) {
+        return null;
+    }
 
     try {
-        const payload = JSON.parse(base64urlDecode(encodedPayload));
+        const payload = JSON.parse(
+            base64urlDecode(encodedPayload)
+        );
 
-        if (!payload.exp || Date.now() > payload.exp) return null;
+        if (!payload.exp || Date.now() > payload.exp) {
+            return null;
+        }
 
         return payload;
     } catch {
@@ -116,10 +164,167 @@ function verifyToken(token) {
     }
 }
 
-const discordAuth = requireDiscordMember(client, GUILD_ID, verifyToken);
+const discordAuth = requireDiscordMember(
+    client,
+    GUILD_ID,
+    verifyToken
+);
 
 // ======================================================
-// CONNEXION DISCORD OAUTH2
+// VÉRIFICATION DES PERMISSIONS DU SITE
+// ======================================================
+
+function requireSitePermission(permission) {
+    return (req, res, next) => {
+        if (!req.discordMember) {
+            return res.status(401).json({
+                error: "Utilisateur Discord non authentifié."
+            });
+        }
+
+        const permissions = getMemberPermissions(
+            req.discordMember
+        );
+
+        if (!permissions.includes(permission)) {
+            return res.status(403).json({
+                error: "Tu n'as pas la permission nécessaire."
+            });
+        }
+
+        next();
+    };
+}
+
+// ======================================================
+// UTILITAIRES DE MODÉRATION
+// ======================================================
+
+function isSnowflake(value) {
+    return (
+        typeof value === "string" &&
+        /^\d{17,20}$/.test(value)
+    );
+}
+
+function safeReason(value, fallback) {
+    const reason =
+        typeof value === "string" ? value.trim() : "";
+
+    return (reason || fallback).slice(0, 450);
+}
+
+async function getGuild() {
+    return client.guilds.fetch(GUILD_ID);
+}
+
+async function getBotMember(guild) {
+    return guild.members.me || guild.members.fetchMe();
+}
+
+async function fetchTarget(guild, memberId) {
+    if (!isSnowflake(memberId)) {
+        const error = new Error(
+            "Identifiant du membre invalide."
+        );
+
+        error.status = 400;
+        throw error;
+    }
+
+    try {
+        return await guild.members.fetch(memberId);
+    } catch {
+        const error = new Error(
+            "Ce membre n'est pas présent sur le serveur Discord."
+        );
+
+        error.status = 404;
+        throw error;
+    }
+}
+
+function ensureActorCanManageTarget(actor, target, guild) {
+    if (actor.id === target.id) {
+        const error = new Error(
+            "Tu ne peux pas effectuer cette action sur ton propre compte."
+        );
+
+        error.status = 400;
+        throw error;
+    }
+
+    if (target.id === guild.ownerId) {
+        const error = new Error(
+            "Le propriétaire du serveur ne peut pas être modéré par cette action."
+        );
+
+        error.status = 403;
+        throw error;
+    }
+
+    const isOwner = actor.id === guild.ownerId;
+
+    const hasHierarchy = actor.roles.highest.comparePositionTo(
+        target.roles.highest
+    ) > 0;
+
+    if (!isOwner && !hasHierarchy) {
+        const error = new Error(
+            "La hiérarchie des rôles Discord ne permet pas cette action."
+        );
+
+        error.status = 403;
+        throw error;
+    }
+}
+
+function ensureBotCanManageTarget(
+    botMember,
+    target,
+    requiredPermission
+) {
+    if (!botMember.permissions.has(requiredPermission)) {
+        const error = new Error(
+            "Le bot n'a pas la permission Discord nécessaire."
+        );
+
+        error.status = 500;
+        throw error;
+    }
+
+    if (
+        botMember.id === target.id ||
+        botMember.roles.highest.comparePositionTo(
+            target.roles.highest
+        ) <= 0
+    ) {
+        const error = new Error(
+            "Le rôle le plus élevé du bot doit être placé au-dessus de celui du membre."
+        );
+
+        error.status = 403;
+        throw error;
+    }
+}
+
+function invalidateMembersCache() {
+    membersListCache = null;
+    membersListCacheAt = 0;
+}
+
+function handleRouteError(res, error, genericMessage) {
+    console.error(genericMessage, error);
+
+    return res.status(error.status || 500).json({
+        error: error.status
+            ? error.message
+            : genericMessage
+    });
+}
+
+// ======================================================
+// CONNEXION DISCORD OAuth2
 // ======================================================
 
 function createOAuthState() {
@@ -148,7 +353,9 @@ app.get("/auth/discord", (req, res) => {
         state: createOAuthState()
     });
 
-    res.redirect(`https://discord.com/oauth2/authorize?${params.toString()}`);
+    res.redirect(
+        `https://discord.com/oauth2/authorize?${params.toString()}`
+    );
 });
 
 app.get("/auth/discord/callback", async (req, res) => {
@@ -156,7 +363,9 @@ app.get("/auth/discord/callback", async (req, res) => {
         const { code, state } = req.query;
 
         if (!code || !state) {
-            return res.status(400).send("Code ou état OAuth2 manquant.");
+            return res.status(400).send(
+                "Code ou état OAuth2 manquant."
+            );
         }
 
         const statePayload = verifyToken(state);
@@ -211,7 +420,8 @@ app.get("/auth/discord/callback", async (req, res) => {
             "https://discord.com/api/users/@me",
             {
                 headers: {
-                    Authorization: `Bearer ${tokenData.access_token}`
+                    Authorization:
+                        `Bearer ${tokenData.access_token}`
                 }
             }
         );
@@ -224,7 +434,9 @@ app.get("/auth/discord/callback", async (req, res) => {
 
         const user = await userResponse.json();
 
-        console.log(`🔐 Connexion Discord : ${user.username} (${user.id})`);
+        console.log(
+            `🔐 Connexion Discord : ${user.username} (${user.id})`
+        );
 
         const sessionToken = createToken({
             userId: user.id,
@@ -253,14 +465,23 @@ app.get("/auth/discord/callback", async (req, res) => {
 app.get("/auth/me", (req, res) => {
     const authorization = req.headers.authorization;
 
-    if (!authorization || !authorization.startsWith("Bearer ")) {
-        return res.status(401).json({ connected: false });
+    if (
+        !authorization ||
+        !authorization.startsWith("Bearer ")
+    ) {
+        return res.status(401).json({
+            connected: false
+        });
     }
 
-    const session = verifyToken(authorization.substring(7));
+    const session = verifyToken(
+        authorization.substring(7)
+    );
 
     if (!session) {
-        return res.status(401).json({ connected: false });
+        return res.status(401).json({
+            connected: false
+        });
     }
 
     res.json({
@@ -289,6 +510,7 @@ app.get("/auth/permissions", discordAuth, (req, res) => {
     try {
         const member = req.discordMember;
         const user = member.user;
+
         const permissions = getMemberPermissions(member);
 
         const roles = member.roles.cache
@@ -325,16 +547,9 @@ app.get("/auth/permissions", discordAuth, (req, res) => {
 
 // ======================================================
 // LISTE DES MEMBRES
+// Pagination + cache pour limiter les demandes Discord.
 // ======================================================
 
-let membersListCache = null;
-let membersListCacheAt = 0;
-let membersListPromise = null;
-
-const MEMBERS_CACHE_TTL = 60 * 1000;
-
-// Récupération des membres sans utiliser le fetch global
-// WebSocket qui déclenchait la limitation de débit.
 async function readGuildMembers(guild) {
     const allMembers = new Map();
     let after;
@@ -369,7 +584,8 @@ async function readGuildMembers(guild) {
         .map(member => ({
             id: member.user.id,
             username: member.user.username,
-            globalName: member.user.globalName || member.user.username,
+            globalName:
+                member.user.globalName || member.user.username,
             displayName: member.displayName,
             avatar: member.user.displayAvatarURL({
                 extension: "png",
@@ -394,63 +610,480 @@ async function readGuildMembers(guild) {
         );
 }
 
-app.get("/members", discordAuth, async (req, res) => {
-    try {
-        const permissions = getMemberPermissions(req.discordMember);
-
-        if (!permissions.includes(PERMISSIONS.MEMBER_LIST)) {
-            return res.status(403).json({
-                error: "Vous n'avez pas la permission nécessaire."
-            });
-        }
-
-        // Réutilise les données pendant 60 secondes.
-        if (
-            membersListCache &&
-            Date.now() - membersListCacheAt < MEMBERS_CACHE_TTL
-        ) {
-            return res.json({
-                count: membersListCache.length,
-                members: membersListCache
-            });
-        }
-
-        // Évite plusieurs récupérations simultanées.
-        if (!membersListPromise) {
-            membersListPromise = (async () => {
-                const guild = await client.guilds.fetch(GUILD_ID);
-                return await readGuildMembers(guild);
-            })();
-
-            membersListPromise = membersListPromise
-                .then(members => {
-                    membersListCache = members;
-                    membersListCacheAt = Date.now();
-                    return members;
-                })
-                .finally(() => {
-                    membersListPromise = null;
+app.get(
+    "/members",
+    discordAuth,
+    requireSitePermission(PERMISSIONS.MEMBER_LIST),
+    async (req, res) => {
+        try {
+            if (
+                membersListCache &&
+                Date.now() - membersListCacheAt < MEMBERS_CACHE_TTL
+            ) {
+                return res.json({
+                    count: membersListCache.length,
+                    members: membersListCache
                 });
+            }
+
+            if (!membersListPromise) {
+                membersListPromise = (async () => {
+                    const guild = await getGuild();
+                    return readGuildMembers(guild);
+                })()
+                    .then(members => {
+                        membersListCache = members;
+                        membersListCacheAt = Date.now();
+                        return members;
+                    })
+                    .finally(() => {
+                        membersListPromise = null;
+                    });
+            }
+
+            const members = await membersListPromise;
+
+            res.json({
+                count: members.length,
+                members
+            });
+        } catch (error) {
+            handleRouteError(
+                res,
+                error,
+                "Impossible de récupérer les membres."
+            );
         }
-
-        const members = await membersListPromise;
-
-        return res.json({
-            count: members.length,
-            members
-        });
-    } catch (error) {
-        console.error("Erreur liste membres :", error);
-
-        return res.status(500).json({
-            error: "Impossible de récupérer les membres. Réessaie dans un instant."
-        });
     }
-});
+);
 
 // ======================================================
-// ROUTES PUBLIQUES DU SITE
+// BAN TEMPORAIRE
 // ======================================================
+
+// Attention : le minuteur est en mémoire.
+// Un redémarrage du processus peut interrompre le débannissement
+// automatique. Une base de données sera nécessaire pour le rendre durable.
+
+function scheduleTemporaryUnban(guildId, memberId, expiresAt) {
+    const previous = temporaryBanTimers.get(memberId);
+
+    if (previous) {
+        clearTimeout(previous.timer);
+    }
+
+    const delay = Math.max(0, expiresAt - Date.now());
+
+    const timer = setTimeout(async () => {
+        try {
+            const guild = await client.guilds.fetch(guildId);
+
+            await guild.members.unban(
+                memberId,
+                "Fin automatique du ban temporaire"
+            );
+
+            console.log(
+                `✅ Ban temporaire terminé pour ${memberId}`
+            );
+
+            invalidateMembersCache();
+        } catch (error) {
+            if (error.code !== 10026 && error.code !== 10013) {
+                console.error(
+                    `Erreur fin ban temporaire (${memberId}) :`,
+                    error
+                );
+            }
+        } finally {
+            temporaryBanTimers.delete(memberId);
+        }
+    }, delay);
+
+    timer.unref?.();
+
+    temporaryBanTimers.set(memberId, {
+        timer,
+        expiresAt,
+        guildId
+    });
+}
+
+app.post(
+    "/moderation/temp-ban",
+    discordAuth,
+    requireSitePermission(PERMISSIONS.TEMP_BAN),
+    async (req, res) => {
+        try {
+            const memberId = String(
+                req.body?.memberId || ""
+            );
+
+            const durationMinutes = Number(
+                req.body?.durationMinutes
+            );
+
+            if (
+                !Number.isInteger(durationMinutes) ||
+                durationMinutes < 1 ||
+                durationMinutes > MAX_TEMP_BAN_MINUTES
+            ) {
+                return res.status(400).json({
+                    error: "Choisis une durée entre 1 minute et 7 jours."
+                });
+            }
+
+            const guild = await getGuild();
+
+            const actor = await guild.members.fetch(
+                req.discordMember.id
+            );
+
+            const target = await fetchTarget(
+                guild,
+                memberId
+            );
+
+            const botMember = await getBotMember(guild);
+
+            ensureActorCanManageTarget(
+                actor,
+                target,
+                guild
+            );
+
+            ensureBotCanManageTarget(
+                botMember,
+                target,
+                PermissionFlagsBits.BanMembers
+            );
+
+            const reason = safeReason(
+                req.body?.reason,
+                `Ban temporaire demandé par ${actor.user.tag}`
+            );
+
+            await guild.members.ban(target.id, {
+                reason
+            });
+
+            scheduleTemporaryUnban(
+                guild.id,
+                target.id,
+                Date.now() + durationMinutes * 60 * 1000
+            );
+
+            invalidateMembersCache();
+
+            console.log(
+                `⏱️ Ban temporaire : ${target.user.tag}, ${durationMinutes} min, par ${actor.user.tag}`
+            );
+
+            res.json({
+                ok: true,
+                message:
+                    `Membre banni temporairement pour ${durationMinutes} minute(s).`
+            });
+        } catch (error) {
+            handleRouteError(
+                res,
+                error,
+                "Erreur pendant le ban temporaire."
+            );
+        }
+    }
+);
+
+// ======================================================
+// BAN DÉFINITIF
+// ======================================================
+
+app.post(
+    "/moderation/perm-ban",
+    discordAuth,
+    requireSitePermission(PERMISSIONS.PERM_BAN),
+    async (req, res) => {
+        try {
+            const memberId = String(
+                req.body?.memberId || ""
+            );
+
+            const guild = await getGuild();
+
+            const actor = await guild.members.fetch(
+                req.discordMember.id
+            );
+
+            const target = await fetchTarget(
+                guild,
+                memberId
+            );
+
+            const botMember = await getBotMember(guild);
+
+            ensureActorCanManageTarget(
+                actor,
+                target,
+                guild
+            );
+
+            ensureBotCanManageTarget(
+                botMember,
+                target,
+                PermissionFlagsBits.BanMembers
+            );
+
+            const reason = safeReason(
+                req.body?.reason,
+                `Ban définitif demandé par ${actor.user.tag}`
+            );
+
+            await guild.members.ban(target.id, {
+                reason
+            });
+
+            const existingTimer =
+                temporaryBanTimers.get(target.id);
+
+            if (existingTimer) {
+                clearTimeout(existingTimer.timer);
+                temporaryBanTimers.delete(target.id);
+            }
+
+            invalidateMembersCache();
+
+            console.log(
+                `🔨 Ban définitif : ${target.user.tag}, par ${actor.user.tag}`
+            );
+
+            res.json({
+                ok: true,
+                message: "Le membre a été banni définitivement."
+            });
+        } catch (error) {
+            handleRouteError(
+                res,
+                error,
+                "Erreur pendant le ban définitif."
+            );
+        }
+    }
+);
+
+// ======================================================
+// RÔLES : LISTE DES RÔLES MODIFIABLES
+// ======================================================
+
+app.get(
+    "/moderation/roles",
+    discordAuth,
+    requireSitePermission(PERMISSIONS.MANAGE_ROLES),
+    async (req, res) => {
+        try {
+            const memberId = String(
+                req.query.memberId || ""
+            );
+
+            const guild = await getGuild();
+
+            const actor = await guild.members.fetch(
+                req.discordMember.id
+            );
+
+            const target = await fetchTarget(
+                guild,
+                memberId
+            );
+
+            const botMember = await getBotMember(guild);
+
+            if (
+                !botMember.permissions.has(
+                    PermissionFlagsBits.ManageRoles
+                )
+            ) {
+                return res.status(500).json({
+                    error:
+                        "Le bot n'a pas la permission Gérer les rôles sur Discord."
+                });
+            }
+
+            ensureActorCanManageTarget(
+                actor,
+                target,
+                guild
+            );
+
+            await guild.roles.fetch();
+
+            const actorIsOwner =
+                actor.id === guild.ownerId;
+
+            const availableRoles = guild.roles.cache
+                .filter(role =>
+                    role.id !== guild.id &&
+                    !role.managed &&
+                    botMember.roles.highest.comparePositionTo(
+                        role
+                    ) > 0 &&
+                    (
+                        actorIsOwner ||
+                        actor.roles.highest.comparePositionTo(
+                            role
+                        ) > 0
+                    )
+                )
+                .sort((a, b) => b.position - a.position)
+                .map(role => ({
+                    id: role.id,
+                    name: role.name,
+                    color: role.hexColor,
+                    assigned: target.roles.cache.has(role.id)
+                }));
+
+            res.json({
+                memberId: target.id,
+                memberName: target.displayName,
+                roles: availableRoles
+            });
+        } catch (error) {
+            handleRouteError(
+                res,
+                error,
+                "Erreur pendant le chargement des rôles."
+            );
+        }
+    }
+);
+
+// ======================================================
+// RÔLES : AJOUT / RETRAIT
+// ======================================================
+
+app.post(
+    "/moderation/roles",
+    discordAuth,
+    requireSitePermission(PERMISSIONS.MANAGE_ROLES),
+    async (req, res) => {
+        try {
+            const memberId = String(
+                req.body?.memberId || ""
+            );
+
+            const roleId = String(
+                req.body?.roleId || ""
+            );
+
+            const action = String(
+                req.body?.action || ""
+            );
+
+            if (!isSnowflake(roleId)) {
+                return res.status(400).json({
+                    error: "Identifiant de rôle invalide."
+                });
+            }
+
+            if (action !== "add" && action !== "remove") {
+                return res.status(400).json({
+                    error: "Action invalide."
+                });
+            }
+
+            const guild = await getGuild();
+
+            const actor = await guild.members.fetch(
+                req.discordMember.id
+            );
+
+            const target = await fetchTarget(
+                guild,
+                memberId
+            );
+
+            const botMember = await getBotMember(guild);
+
+            const role = await guild.roles.fetch(roleId);
+
+            if (
+                !role ||
+                role.id === guild.id ||
+                role.managed
+            ) {
+                return res.status(400).json({
+                    error:
+                        "Ce rôle ne peut pas être modifié depuis le dashboard."
+                });
+            }
+
+            if (
+                !botMember.permissions.has(
+                    PermissionFlagsBits.ManageRoles
+                )
+            ) {
+                return res.status(500).json({
+                    error:
+                        "Le bot n'a pas la permission Gérer les rôles sur Discord."
+                });
+            }
+
+            ensureActorCanManageTarget(
+                actor,
+                target,
+                guild
+            );
+
+            if (
+                botMember.roles.highest.comparePositionTo(
+                    role
+                ) <= 0
+            ) {
+                return res.status(403).json({
+                    error:
+                        "Le rôle du bot doit être placé au-dessus du rôle à modifier."
+                });
+            }
+
+            if (
+                actor.id !== guild.ownerId &&
+                actor.roles.highest.comparePositionTo(role) <= 0
+            ) {
+                return res.status(403).json({
+                    error:
+                        "Tu ne peux pas modifier un rôle égal ou supérieur à ton rôle le plus élevé."
+                });
+            }
+
+            const reason =
+                `Gestion des rôles depuis le dashboard par ${actor.user.tag} (${actor.id})`;
+
+            if (action === "add") {
+                await target.roles.add(role, reason);
+            } else {
+                await target.roles.remove(role, reason);
+            }
+
+            invalidateMembersCache();
+
+            console.log(
+                `🛡️ Rôle ${action === "add" ? "ajouté" : "retiré"} : ${role.name} -> ${target.user.tag}, par ${actor.user.tag}`
+            );
+
+            res.json({
+                ok: true,
+                message: action === "add"
+                    ? `Rôle « ${role.name} » ajouté.`
+                    : `Rôle « ${role.name} » retiré.`
+            });
+        } catch (error) {
+            handleRouteError(
+                res,
+                error,
+                "Erreur pendant la gestion des rôles."
+            );
+        }
+    }
+);
 
 // ======================================================
 // ROUTES PUBLIQUES DU SITE
@@ -467,7 +1100,7 @@ app.get("/annonces", (req, res) => res.json(announcementsCache));
 app.get("/regles", (req, res) => res.json(rulesCache));
 
 // ======================================================
-// CHARGEMENT ET ACTUALISATION DES DONNÉES DU BOT
+// CHARGEMENT ET ACTUALISATION DES DONNÉES
 // ======================================================
 
 client.once(Events.ClientReady, async () => {
@@ -475,20 +1108,36 @@ client.once(Events.ClientReady, async () => {
 
     try {
         eventsCache = await updateEvents(client, GUILD_ID);
-        staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
-        statsCache = await updateStats(client, GUILD_ID);
+
+        staffCache = await updateStaff(
+            client,
+            GUILD_ID,
+            STAFF_ROLES
+        );
+
+        statsCache = await updateStats(
+            client,
+            GUILD_ID
+        );
+
         announcementsCache = await updateAnnouncements(
             client,
             ANNOUNCEMENTS_CHANNEL_ID
         );
-        rulesCache = await updateRules(client, RULES_CHANNEL_ID);
+
+        rulesCache = await updateRules(
+            client,
+            RULES_CHANNEL_ID
+        );
 
         console.log("✅ Toutes les données sont chargées.");
     } catch (error) {
-        console.error("Erreur de chargement initial :", error);
+        console.error(
+            "Erreur de chargement initial :",
+            error
+        );
     }
 
-    // Événements : toutes les 5 minutes
     setInterval(async () => {
         try {
             eventsCache = await updateEvents(client, GUILD_ID);
@@ -497,7 +1146,6 @@ client.once(Events.ClientReady, async () => {
         }
     }, 5 * 60 * 1000);
 
-    // Statistiques : toutes les 5 minutes
     setInterval(async () => {
         try {
             statsCache = await updateStats(client, GUILD_ID);
@@ -506,7 +1154,6 @@ client.once(Events.ClientReady, async () => {
         }
     }, 5 * 60 * 1000);
 
-    // Staff : toutes les 30 minutes
     setInterval(async () => {
         try {
             staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
@@ -515,7 +1162,6 @@ client.once(Events.ClientReady, async () => {
         }
     }, 30 * 60 * 1000);
 
-    // Annonces : toutes les minutes
     setInterval(async () => {
         try {
             announcementsCache = await updateAnnouncements(
@@ -527,7 +1173,6 @@ client.once(Events.ClientReady, async () => {
         }
     }, 60 * 1000);
 
-    // Règlement : toutes les minutes
     setInterval(async () => {
         try {
             rulesCache = await updateRules(client, RULES_CHANNEL_ID);
@@ -537,13 +1182,23 @@ client.once(Events.ClientReady, async () => {
     }, 60 * 1000);
 });
 
-// Actualiser le staff et les statistiques lors des changements de membres.
 async function refreshStaffAndStats() {
     try {
-        staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
-        statsCache = await updateStats(client, GUILD_ID);
+        staffCache = await updateStaff(
+            client,
+            GUILD_ID,
+            STAFF_ROLES
+        );
+
+        statsCache = await updateStats(
+            client,
+            GUILD_ID
+        );
     } catch (error) {
-        console.error("Erreur actualisation membres/stats :", error);
+        console.error(
+            "Erreur actualisation membres/stats :",
+            error
+        );
     }
 }
 
@@ -552,7 +1207,7 @@ client.on(Events.GuildMemberRemove, refreshStaffAndStats);
 client.on(Events.GuildMemberUpdate, refreshStaffAndStats);
 
 // ======================================================
-// DÉMARRAGE DU SERVEUR WEB ET DU BOT
+// DÉMARRAGE
 // ======================================================
 
 app.listen(PORT, () => {
@@ -560,5 +1215,8 @@ app.listen(PORT, () => {
 });
 
 client.login(process.env.DISCORD_TOKEN).catch(error => {
-    console.error("Erreur de connexion du bot Discord :", error);
+    console.error(
+        "Erreur de connexion du bot Discord :",
+        error
+    );
 });
