@@ -32,6 +32,7 @@ const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildPresences,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent
     ]
@@ -587,6 +588,9 @@ async function readGuildMembers(guild) {
             globalName:
                 member.user.globalName || member.user.username,
             displayName: member.displayName,
+            nickname: member.nickname || "",
+            status:
+                guild.presences.cache.get(member.id)?.status || "unknown",
             avatar: member.user.displayAvatarURL({
                 extension: "png",
                 size: 128
@@ -1086,6 +1090,154 @@ app.post(
 );
 
 // ======================================================
+// EXPULSER UN MEMBRE
+// ======================================================
+
+app.post(
+    "/moderation/kick",
+    discordAuth,
+    requireSitePermission(PERMISSIONS.KICK_MEMBER),
+    async (req, res) => {
+        try {
+            const memberId = String(req.body?.memberId || "");
+            const guild = await getGuild();
+
+            const actor = await guild.members.fetch(
+                req.discordMember.id
+            );
+
+            const target = await fetchTarget(
+                guild,
+                memberId
+            );
+
+            const botMember = await getBotMember(guild);
+
+            ensureActorCanManageTarget(
+                actor,
+                target,
+                guild
+            );
+
+            ensureBotCanManageTarget(
+                botMember,
+                target,
+                PermissionFlagsBits.KickMembers
+            );
+
+            const reason = safeReason(
+                req.body?.reason,
+                `Expulsion demandée par ${actor.user.tag}`
+            );
+
+            await target.kick(reason);
+            invalidateMembersCache();
+
+            console.log(
+                `👢 Expulsion : ${target.user.tag}, par ${actor.user.tag}`
+            );
+
+            return res.json({
+                ok: true,
+                message: `${target.user.tag} a été expulsé du serveur.`
+            });
+        } catch (error) {
+            return handleRouteError(
+                res,
+                error,
+                "Erreur pendant l'expulsion du membre."
+            );
+        }
+    }
+);
+
+// ======================================================
+// MODIFIER LE PSEUDO D'UN MEMBRE SUR LE SERVEUR
+// ======================================================
+
+app.post(
+    "/moderation/nickname",
+    discordAuth,
+    requireSitePermission(PERMISSIONS.MANAGE_NICKNAMES),
+    async (req, res) => {
+        try {
+            const memberId = String(req.body?.memberId || "");
+            const nickname = req.body?.nickname;
+
+            if (typeof nickname !== "string") {
+                return res.status(400).json({
+                    error: "Le nouveau pseudo doit être du texte."
+                });
+            }
+
+            const cleanNickname = nickname.trim();
+
+            if (cleanNickname.length > 32) {
+                return res.status(400).json({
+                    error:
+                        "Le pseudo doit contenir au maximum 32 caractères."
+                });
+            }
+
+            const guild = await getGuild();
+
+            const actor = await guild.members.fetch(
+                req.discordMember.id
+            );
+
+            const target = await fetchTarget(
+                guild,
+                memberId
+            );
+
+            const botMember = await getBotMember(guild);
+
+            ensureActorCanManageTarget(
+                actor,
+                target,
+                guild
+            );
+
+            ensureBotCanManageTarget(
+                botMember,
+                target,
+                PermissionFlagsBits.ManageNicknames
+            );
+
+            const reason = safeReason(
+                req.body?.reason,
+                `Pseudo modifié par ${actor.user.tag}`
+            );
+
+            // Un champ vide réinitialise le pseudo personnalisé.
+            await target.setNickname(
+                cleanNickname || null,
+                reason
+            );
+
+            invalidateMembersCache();
+
+            console.log(
+                `✏️ Pseudo modifié : ${target.user.tag}, nouveau pseudo : ${cleanNickname || "(réinitialisé)"}, par ${actor.user.tag}`
+            );
+
+            return res.json({
+                ok: true,
+                message: cleanNickname
+                    ? `Le pseudo a été changé en « ${cleanNickname} ».`
+                    : "Le pseudo personnalisé a été réinitialisé."
+            });
+        } catch (error) {
+            return handleRouteError(
+                res,
+                error,
+                "Erreur pendant la modification du pseudo."
+            );
+        }
+    }
+);
+
+// ======================================================
 // ROUTES PUBLIQUES DU SITE
 // ======================================================
 
@@ -1138,6 +1290,7 @@ client.once(Events.ClientReady, async () => {
         );
     }
 
+    // Événements : toutes les 5 minutes
     setInterval(async () => {
         try {
             eventsCache = await updateEvents(client, GUILD_ID);
@@ -1146,6 +1299,7 @@ client.once(Events.ClientReady, async () => {
         }
     }, 5 * 60 * 1000);
 
+    // Statistiques : toutes les 5 minutes
     setInterval(async () => {
         try {
             statsCache = await updateStats(client, GUILD_ID);
@@ -1154,14 +1308,20 @@ client.once(Events.ClientReady, async () => {
         }
     }, 5 * 60 * 1000);
 
+    // Staff : toutes les 30 minutes
     setInterval(async () => {
         try {
-            staffCache = await updateStaff(client, GUILD_ID, STAFF_ROLES);
+            staffCache = await updateStaff(
+                client,
+                GUILD_ID,
+                STAFF_ROLES
+            );
         } catch (error) {
             console.error("Erreur mise à jour staff :", error);
         }
     }, 30 * 60 * 1000);
 
+    // Annonces : toutes les minutes
     setInterval(async () => {
         try {
             announcementsCache = await updateAnnouncements(
@@ -1173,15 +1333,20 @@ client.once(Events.ClientReady, async () => {
         }
     }, 60 * 1000);
 
+    // Règlement : toutes les minutes
     setInterval(async () => {
         try {
-            rulesCache = await updateRules(client, RULES_CHANNEL_ID);
+            rulesCache = await updateRules(
+                client,
+                RULES_CHANNEL_ID
+            );
         } catch (error) {
             console.error("Erreur mise à jour règlement :", error);
         }
     }, 60 * 1000);
 });
 
+// Actualiser le staff et les statistiques lors des changements de membres.
 async function refreshStaffAndStats() {
     try {
         staffCache = await updateStaff(
