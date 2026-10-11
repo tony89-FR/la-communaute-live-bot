@@ -23,6 +23,10 @@ const PERMISSIONS = {
 
     PERM_BAN: "perm_ban",
 
+    KICK_MEMBER: "kick_member",
+
+    MANAGE_NICKNAMES: "manage_nicknames",
+
     MANAGE_ROLES: "manage_roles",
 
     SANCTIONS_TOTAL: "sanctions_total",
@@ -61,7 +65,6 @@ const PERMISSIONS = {
 
     BOT_STATUS: "bot_status"
 };
-
 
 // ======================================================
 // EXPORT
