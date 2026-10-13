@@ -1,3 +1,4 @@
+
 require("dotenv").config();
 
 const express = require("express");
@@ -66,7 +67,6 @@ let membersListPromise = null;
 
 const MEMBERS_CACHE_TTL = 60 * 1000;
 
-// Les bans temporaires actifs dans ce processus.
 const temporaryBanTimers = new Map();
 const MAX_TEMP_BAN_MINUTES = 7 * 24 * 60;
 
@@ -665,10 +665,6 @@ app.get(
 // BAN TEMPORAIRE
 // ======================================================
 
-// Attention : le minuteur est en mémoire.
-// Un redémarrage du processus peut interrompre le débannissement
-// automatique. Une base de données sera nécessaire pour le rendre durable.
-
 function scheduleTemporaryUnban(guildId, memberId, expiresAt) {
     const previous = temporaryBanTimers.get(memberId);
 
@@ -1209,7 +1205,6 @@ app.post(
                 `Pseudo modifié par ${actor.user.tag}`
             );
 
-            // Un champ vide réinitialise le pseudo personnalisé.
             await target.setNickname(
                 cleanNickname || null,
                 reason
@@ -1232,6 +1227,181 @@ app.post(
                 res,
                 error,
                 "Erreur pendant la modification du pseudo."
+            );
+        }
+    }
+);
+
+// ======================================================
+// MINI-DISCORD : LISTE DES SALONS
+// ======================================================
+
+app.get(
+    "/chat/channels",
+    discordAuth,
+    requireSitePermission("discord_mobile"),
+    async (req, res) => {
+        try {
+            const guild = await getGuild();
+            const botMember = await getBotMember(guild);
+            const channels = await guild.channels.fetch();
+
+            const visibleChannels = channels
+                .filter(channel => {
+                    if (
+                        !channel ||
+                        channel.guildId !== guild.id ||
+                        ![0, 5].includes(channel.type)
+                    ) {
+                        return false;
+                    }
+
+                    const userPerms =
+                        channel.permissionsFor(req.discordMember);
+
+                    const botPerms =
+                        channel.permissionsFor(botMember);
+
+                    return Boolean(
+                        userPerms &&
+                        botPerms &&
+                        userPerms.has(PermissionFlagsBits.ViewChannel) &&
+                        userPerms.has(PermissionFlagsBits.ReadMessageHistory) &&
+                        botPerms.has(PermissionFlagsBits.ViewChannel) &&
+                        botPerms.has(PermissionFlagsBits.ReadMessageHistory)
+                    );
+                })
+                .map(channel => ({
+                    id: channel.id,
+                    name: channel.name,
+                    type: channel.type === 5 ? "annonce" : "texte",
+                    categoryId: channel.parentId,
+                    categoryName:
+                        channel.parent?.name || "Salons sans catégorie",
+                    categoryPosition: channel.parent?.rawPosition ?? -1,
+                    position: channel.rawPosition
+                }))
+                .sort((a, b) =>
+                    a.categoryPosition - b.categoryPosition ||
+                    a.position - b.position
+                );
+
+            res.json({
+                count: visibleChannels.length,
+                channels: visibleChannels
+            });
+        } catch (error) {
+            handleRouteError(
+                res,
+                error,
+                "Impossible de récupérer les salons Discord."
+            );
+        }
+    }
+);
+
+// ======================================================
+// MINI-DISCORD : DERNIERS MESSAGES D'UN SALON
+// ======================================================
+
+app.get(
+    "/chat/channels/:channelId/messages",
+    discordAuth,
+    requireSitePermission("discord_mobile"),
+    async (req, res) => {
+        try {
+            const channelId = String(req.params.channelId || "");
+
+            if (!isSnowflake(channelId)) {
+                return res.status(400).json({
+                    error: "Identifiant de salon invalide."
+                });
+            }
+
+            const guild = await getGuild();
+            const channel = await guild.channels.fetch(channelId);
+
+            if (
+                !channel ||
+                channel.guildId !== guild.id ||
+                ![0, 5].includes(channel.type)
+            ) {
+                return res.status(404).json({
+                    error: "Ce salon texte est introuvable."
+                });
+            }
+
+            const userPerms =
+                channel.permissionsFor(req.discordMember);
+
+            const botMember = await getBotMember(guild);
+            const botPerms = channel.permissionsFor(botMember);
+
+            if (
+                !userPerms ||
+                !userPerms.has(PermissionFlagsBits.ViewChannel) ||
+                !userPerms.has(PermissionFlagsBits.ReadMessageHistory)
+            ) {
+                return res.status(403).json({
+                    error: "Tu n'as pas accès à ce salon."
+                });
+            }
+
+            if (
+                !botPerms ||
+                !botPerms.has(PermissionFlagsBits.ViewChannel) ||
+                !botPerms.has(PermissionFlagsBits.ReadMessageHistory)
+            ) {
+                return res.status(403).json({
+                    error: "Le bot ne peut pas lire les messages de ce salon."
+                });
+            }
+
+            const fetchedMessages =
+                await channel.messages.fetch({ limit: 50 });
+
+            const messages = [...fetchedMessages.values()]
+                .sort(
+                    (a, b) => a.createdTimestamp - b.createdTimestamp
+                )
+                .map(message => ({
+                    id: message.id,
+                    content: message.content,
+                    author: {
+                        id: message.author.id,
+                        username: message.author.username,
+                        displayName:
+                            message.member?.displayName ||
+                            message.author.globalName ||
+                            message.author.username,
+                        avatar: message.author.displayAvatarURL({
+                            extension: "png",
+                            size: 64
+                        }),
+                        bot: message.author.bot
+                    },
+                    timestamp: message.createdAt.toISOString(),
+                    attachments: [...message.attachments.values()].map(
+                        attachment => ({
+                            name: attachment.name,
+                            url: attachment.url
+                        })
+                    )
+                }));
+
+            res.json({
+                channel: {
+                    id: channel.id,
+                    name: channel.name
+                },
+                count: messages.length,
+                messages
+            });
+        } catch (error) {
+            handleRouteError(
+                res,
+                error,
+                "Impossible de récupérer les messages du salon."
             );
         }
     }
