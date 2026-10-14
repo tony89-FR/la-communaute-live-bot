@@ -1538,9 +1538,10 @@ app.post(
                 });
             }
 
-            if (content.length > 2000) {
+            // On garde de la place pour la ligne d'attribution ajoutée par le bot.
+            if (content.length > 1900) {
                 return res.status(400).json({
-                    error: "Le message ne peut pas dépasser 2000 caractères."
+                    error: "Le message ne peut pas dépasser 1900 caractères."
                 });
             }
 
@@ -1620,8 +1621,23 @@ app.post(
                 }
             }
 
+            // Attribution explicite : le bot publie le message et indique
+            // quel membre connecté l'a rédigé depuis le site.
+            const senderName = String(member.displayName || member.user.username)
+                .replace(/[\r\n\t]/g, " ")
+                .trim()
+                .slice(0, 80);
+
+            const attributedContent = `✍️ Message de ${senderName} :\n${content}`;
+
+            if (attributedContent.length > 2000) {
+                return res.status(400).json({
+                    error: "Le message est trop long après l'ajout de l'attribution ou des mentions. Réduis un peu le texte."
+                });
+            }
+
             const sentMessage = await channel.send({
-                content,
+                content: attributedContent,
                 allowedMentions: {
                     parse: [],
                     users: allowedUserMentions,
@@ -1631,13 +1647,13 @@ app.post(
             });
 
             console.log(
-                `💬 Message depuis le site : ${member.user.tag} -> #${channel.name}`
+                `💬 Message depuis le site : ${member.user.tag} (${member.id}) -> #${channel.name}`
             );
 
             return res.json({
                 ok: true,
                 messageId: sentMessage.id,
-                message: "Message envoyé par le bot."
+                message: `Message envoyé par le bot avec l'attribution de ${senderName}.`
             });
         } catch (error) {
             return handleRouteError(
