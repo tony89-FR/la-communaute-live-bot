@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 
 const express = require("express");
@@ -1233,9 +1232,10 @@ app.post(
 );
 
 // ======================================================
-// MINI-DISCORD : LISTE DES SALONS
+// MINI-DISCORD : SALONS, MEMBRES, MESSAGES ET ENVOI
 // ======================================================
 
+// Liste des salons que le membre et le bot peuvent lire.
 app.get(
     "/chat/channels",
     discordAuth,
@@ -1243,10 +1243,11 @@ app.get(
     async (req, res) => {
         try {
             const guild = await getGuild();
+            const member = await guild.members.fetch(req.discordMember.id);
             const botMember = await getBotMember(guild);
-            const channels = await guild.channels.fetch();
+            const fetchedChannels = await guild.channels.fetch();
 
-            const visibleChannels = channels
+            const channels = [...fetchedChannels.values()]
                 .filter(channel => {
                     if (
                         !channel ||
@@ -1256,42 +1257,34 @@ app.get(
                         return false;
                     }
 
-                    const userPerms =
-                        channel.permissionsFor(req.discordMember);
-
-                    const botPerms =
-                        channel.permissionsFor(botMember);
+                    const userPermissions = channel.permissionsFor(member);
+                    const botPermissions = channel.permissionsFor(botMember);
 
                     return Boolean(
-                        userPerms &&
-                        botPerms &&
-                        userPerms.has(PermissionFlagsBits.ViewChannel) &&
-                        userPerms.has(PermissionFlagsBits.ReadMessageHistory) &&
-                        botPerms.has(PermissionFlagsBits.ViewChannel) &&
-                        botPerms.has(PermissionFlagsBits.ReadMessageHistory)
+                        userPermissions &&
+                        userPermissions.has(PermissionFlagsBits.ViewChannel) &&
+                        userPermissions.has(PermissionFlagsBits.ReadMessageHistory) &&
+                        botPermissions &&
+                        botPermissions.has(PermissionFlagsBits.ViewChannel) &&
+                        botPermissions.has(PermissionFlagsBits.ReadMessageHistory)
                     );
                 })
+                .sort((a, b) =>
+                    (a.parent?.rawPosition ?? -1) - (b.parent?.rawPosition ?? -1) ||
+                    a.rawPosition - b.rawPosition
+                )
                 .map(channel => ({
                     id: channel.id,
                     name: channel.name,
-                    type: channel.type === 5 ? "annonce" : "texte",
+                    type: channel.type,
                     categoryId: channel.parentId,
-                    categoryName:
-                        channel.parent?.name || "Salons sans catégorie",
-                    categoryPosition: channel.parent?.rawPosition ?? -1,
+                    categoryName: channel.parent?.name || "Salons sans catégorie",
                     position: channel.rawPosition
-                }))
-                .sort((a, b) =>
-                    a.categoryPosition - b.categoryPosition ||
-                    a.position - b.position
-                );
+                }));
 
-            res.json({
-                count: visibleChannels.length,
-                channels: visibleChannels
-            });
+            return res.json({ channels });
         } catch (error) {
-            handleRouteError(
+            return handleRouteError(
                 res,
                 error,
                 "Impossible de récupérer les salons Discord."
@@ -1300,10 +1293,47 @@ app.get(
     }
 );
 
-// ======================================================
-// MINI-DISCORD : DERNIERS MESSAGES D'UN SALON
-// ======================================================
+// Recherche de membres pour les suggestions quand on tape @pseudo.
+app.get(
+    "/chat/members",
+    discordAuth,
+    requireSitePermission("discord_mobile"),
+    async (req, res) => {
+        try {
+            const query = String(req.query.q || "").trim().slice(0, 32);
 
+            if (!query) {
+                return res.json({ members: [] });
+            }
+
+            const guild = await getGuild();
+            const results = await guild.members.search({
+                query,
+                limit: 10
+            });
+
+            const members = [...results.values()].map(member => ({
+                id: member.id,
+                username: member.user.username,
+                displayName: member.displayName,
+                avatar: member.user.displayAvatarURL({
+                    extension: "png",
+                    size: 64
+                })
+            }));
+
+            return res.json({ members });
+        } catch (error) {
+            return handleRouteError(
+                res,
+                error,
+                "Impossible de rechercher les membres Discord."
+            );
+        }
+    }
+);
+
+// Charger les 50 derniers messages avec les noms réels des mentions.
 app.get(
     "/chat/channels/:channelId/messages",
     discordAuth,
@@ -1319,6 +1349,8 @@ app.get(
             }
 
             const guild = await getGuild();
+            const member = await guild.members.fetch(req.discordMember.id);
+            const botMember = await getBotMember(guild);
             const channel = await guild.channels.fetch(channelId);
 
             if (
@@ -1331,16 +1363,13 @@ app.get(
                 });
             }
 
-            const userPerms =
-                channel.permissionsFor(req.discordMember);
-
-            const botMember = await getBotMember(guild);
-            const botPerms = channel.permissionsFor(botMember);
+            const userPermissions = channel.permissionsFor(member);
+            const botPermissions = channel.permissionsFor(botMember);
 
             if (
-                !userPerms ||
-                !userPerms.has(PermissionFlagsBits.ViewChannel) ||
-                !userPerms.has(PermissionFlagsBits.ReadMessageHistory)
+                !userPermissions ||
+                !userPermissions.has(PermissionFlagsBits.ViewChannel) ||
+                !userPermissions.has(PermissionFlagsBits.ReadMessageHistory)
             ) {
                 return res.status(403).json({
                     error: "Tu n'as pas accès à ce salon."
@@ -1348,60 +1377,222 @@ app.get(
             }
 
             if (
-                !botPerms ||
-                !botPerms.has(PermissionFlagsBits.ViewChannel) ||
-                !botPerms.has(PermissionFlagsBits.ReadMessageHistory)
+                !botPermissions ||
+                !botPermissions.has(PermissionFlagsBits.ViewChannel) ||
+                !botPermissions.has(PermissionFlagsBits.ReadMessageHistory)
             ) {
                 return res.status(403).json({
                     error: "Le bot ne peut pas lire les messages de ce salon."
                 });
             }
 
-            const fetchedMessages =
-                await channel.messages.fetch({ limit: 50 });
+            const fetchedMessages = await channel.messages.fetch({ limit: 50 });
 
             const messages = [...fetchedMessages.values()]
-                .sort(
-                    (a, b) => a.createdTimestamp - b.createdTimestamp
-                )
-                .map(message => ({
-                    id: message.id,
-                    content: message.content,
-                    author: {
-                        id: message.author.id,
-                        username: message.author.username,
-                        displayName:
-                            message.member?.displayName ||
+                .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+                .map(message => {
+                    const authorMember =
+                        message.member ||
+                        guild.members.cache.get(message.author.id);
+
+                    return {
+                        id: message.id,
+                        content: message.content,
+                        authorId: message.author.id,
+                        authorName:
+                            authorMember?.displayName ||
                             message.author.globalName ||
                             message.author.username,
-                        avatar: message.author.displayAvatarURL({
+                        authorUsername: message.author.username,
+                        authorAvatar: message.author.displayAvatarURL({
                             extension: "png",
                             size: 64
                         }),
-                        bot: message.author.bot
-                    },
-                    timestamp: message.createdAt.toISOString(),
-                    attachments: [...message.attachments.values()].map(
-                        attachment => ({
-                            name: attachment.name,
+                        // Garder aussi l'objet imbriqué pour compatibilité.
+                        author: {
+                            id: message.author.id,
+                            username: message.author.username,
+                            displayName:
+                                authorMember?.displayName ||
+                                message.author.globalName ||
+                                message.author.username,
+                            avatar: message.author.displayAvatarURL({
+                                extension: "png",
+                                size: 64
+                            }),
+                            bot: message.author.bot
+                        },
+                        timestamp: message.createdAt.toISOString(),
+                        attachments: [...message.attachments.values()].map(attachment => ({
+                            name: attachment.name || "Fichier joint",
                             url: attachment.url
-                        })
-                    )
-                }));
+                        })),
+                        mentions: {
+                            users: [...message.mentions.users.values()].map(user => ({
+                                id: user.id,
+                                name:
+                                    message.mentions.members?.get(user.id)?.displayName ||
+                                    user.globalName ||
+                                    user.username
+                            })),
+                            roles: [...message.mentions.roles.values()].map(role => ({
+                                id: role.id,
+                                name: role.name
+                            })),
+                            channels: [...message.mentions.channels.values()].map(mentionedChannel => ({
+                                id: mentionedChannel.id,
+                                name: mentionedChannel.name
+                            }))
+                        }
+                    };
+                });
 
-            res.json({
-                channel: {
-                    id: channel.id,
-                    name: channel.name
-                },
+            return res.json({
+                channel: { id: channel.id, name: channel.name },
                 count: messages.length,
                 messages
             });
         } catch (error) {
-            handleRouteError(
+            return handleRouteError(
                 res,
                 error,
                 "Impossible de récupérer les messages du salon."
+            );
+        }
+    }
+);
+
+// Envoyer un message. L'envoi est effectué par le bot, après vérification
+// des permissions du compte connecté et du bot dans le salon sélectionné.
+app.post(
+    "/chat/channels/:channelId/messages",
+    discordAuth,
+    requireSitePermission("discord_mobile"),
+    async (req, res) => {
+        try {
+            const channelId = String(req.params.channelId || "");
+            let content = typeof req.body?.content === "string"
+                ? req.body.content.trim()
+                : "";
+
+            if (!isSnowflake(channelId)) {
+                return res.status(400).json({
+                    error: "Identifiant de salon invalide."
+                });
+            }
+
+            if (!content) {
+                return res.status(400).json({
+                    error: "Écris un message avant de l'envoyer."
+                });
+            }
+
+            if (content.length > 2000) {
+                return res.status(400).json({
+                    error: "Le message ne peut pas dépasser 2000 caractères."
+                });
+            }
+
+            const guild = await getGuild();
+            const member = await guild.members.fetch(req.discordMember.id);
+            const botMember = await getBotMember(guild);
+            const channel = await guild.channels.fetch(channelId);
+
+            if (
+                !channel ||
+                channel.guildId !== guild.id ||
+                ![0, 5].includes(channel.type)
+            ) {
+                return res.status(404).json({
+                    error: "Ce salon texte est introuvable."
+                });
+            }
+
+            const userPermissions = channel.permissionsFor(member);
+            const botPermissions = channel.permissionsFor(botMember);
+
+            if (
+                !userPermissions ||
+                !userPermissions.has(PermissionFlagsBits.ViewChannel) ||
+                !userPermissions.has(PermissionFlagsBits.SendMessages)
+            ) {
+                return res.status(403).json({
+                    error: "Tu n'as pas le droit d'écrire dans ce salon."
+                });
+            }
+
+            if (
+                !botPermissions ||
+                !botPermissions.has(PermissionFlagsBits.ViewChannel) ||
+                !botPermissions.has(PermissionFlagsBits.SendMessages)
+            ) {
+                return res.status(403).json({
+                    error: "Le bot n'a pas le droit d'écrire dans ce salon."
+                });
+            }
+
+            const requestedIds = Array.isArray(req.body?.mentionUserIds)
+                ? [...new Set(req.body.mentionUserIds.map(String))].slice(0, 10)
+                : [];
+
+            const allowedUserMentions = [];
+
+            for (const userId of requestedIds) {
+                if (!isSnowflake(userId)) continue;
+
+                try {
+                    const target = await guild.members.fetch(userId);
+                    const visibleMention = `@${target.user.username}`;
+                    const escapedMention = visibleMention.replace(
+                        /[.*+?^${}()|[\]\\]/g,
+                        "\\$&"
+                    );
+                    const mentionPattern = new RegExp(
+                        `(^|\\s)${escapedMention}(?=\\s|$|[,!.?;:])`,
+                        "g"
+                    );
+                    let replaced = false;
+
+                    content = content.replace(
+                        mentionPattern,
+                        (match, prefix) => {
+                            replaced = true;
+                            return `${prefix}<@${target.id}>`;
+                        }
+                    );
+
+                    if (replaced) {
+                        allowedUserMentions.push(target.id);
+                    }
+                } catch {
+                    // Ignore les membres qui ne sont plus présents sur le serveur.
+                }
+            }
+
+            const sentMessage = await channel.send({
+                content,
+                allowedMentions: {
+                    parse: [],
+                    users: allowedUserMentions,
+                    roles: [],
+                    repliedUser: false
+                }
+            });
+
+            console.log(
+                `💬 Message depuis le site : ${member.user.tag} -> #${channel.name}`
+            );
+
+            return res.json({
+                ok: true,
+                messageId: sentMessage.id,
+                message: "Message envoyé par le bot."
+            });
+        } catch (error) {
+            return handleRouteError(
+                res,
+                error,
+                "Erreur pendant l'envoi du message."
             );
         }
     }
