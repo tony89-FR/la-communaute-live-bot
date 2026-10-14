@@ -33,6 +33,7 @@ const client = new Client({
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildPresences,
+        GatewayIntentBits.GuildVoiceStates,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent
     ]
@@ -1252,7 +1253,7 @@ app.get(
                     if (
                         !channel ||
                         channel.guildId !== guild.id ||
-                        ![0, 5].includes(channel.type)
+                        ![0, 2, 5, 13].includes(channel.type)
                     ) {
                         return false;
                     }
@@ -1260,11 +1261,23 @@ app.get(
                     const userPermissions = channel.permissionsFor(member);
                     const botPermissions = channel.permissionsFor(botMember);
 
-                    return Boolean(
-                        userPermissions &&
+                    if (!userPermissions || !botPermissions) {
+                        return false;
+                    }
+
+                    if ([2, 13].includes(channel.type)) {
+                        // Salon vocal ou salon de conférence (Stage).
+                        return (
+                            userPermissions.has(PermissionFlagsBits.ViewChannel) &&
+                            userPermissions.has(PermissionFlagsBits.Connect) &&
+                            botPermissions.has(PermissionFlagsBits.ViewChannel)
+                        );
+                    }
+
+                    // Salon texte ou annonces.
+                    return (
                         userPermissions.has(PermissionFlagsBits.ViewChannel) &&
                         userPermissions.has(PermissionFlagsBits.ReadMessageHistory) &&
-                        botPermissions &&
                         botPermissions.has(PermissionFlagsBits.ViewChannel) &&
                         botPermissions.has(PermissionFlagsBits.ReadMessageHistory)
                     );
@@ -1273,14 +1286,51 @@ app.get(
                     (a.parent?.rawPosition ?? -1) - (b.parent?.rawPosition ?? -1) ||
                     a.rawPosition - b.rawPosition
                 )
-                .map(channel => ({
-                    id: channel.id,
-                    name: channel.name,
-                    type: channel.type,
-                    categoryId: channel.parentId,
-                    categoryName: channel.parent?.name || "Salons sans catégorie",
-                    position: channel.rawPosition
-                }));
+                .map(channel => {
+                    const isVoice = [2, 13].includes(channel.type);
+
+                    const base = {
+                        id: channel.id,
+                        name: channel.name,
+                        type: channel.type,
+                        kind: isVoice ? "voice" : "text",
+                        categoryId: channel.parentId,
+                        categoryName: channel.parent?.name || "Salons sans catégorie",
+                        position: channel.rawPosition
+                    };
+
+                    if (!isVoice) {
+                        return base;
+                    }
+
+                    const voiceUsers = [...channel.members.values()].map(voiceMember => {
+                        const voiceState = guild.voiceStates.cache.get(voiceMember.id);
+
+                        return {
+                            id: voiceMember.id,
+                            username: voiceMember.user.username,
+                            displayName: voiceMember.displayName || voiceMember.user.globalName || voiceMember.user.username,
+                            avatar: voiceMember.user.displayAvatarURL({
+                                extension: "png",
+                                size: 64
+                            }),
+                            selfMute: Boolean(voiceState?.selfMute),
+                            selfDeaf: Boolean(voiceState?.selfDeaf),
+                            serverMute: Boolean(voiceState?.serverMute),
+                            serverDeaf: Boolean(voiceState?.serverDeaf),
+                            streaming: Boolean(voiceState?.streaming),
+                            video: Boolean(voiceState?.selfVideo)
+                        };
+                    }).sort((a, b) => a.displayName.localeCompare(b.displayName, "fr", { sensitivity: "base" }));
+
+                    return {
+                        ...base,
+                        voiceUsers,
+                        userCount: voiceUsers.length,
+                        userLimit: channel.userLimit || 0,
+                        bitrate: channel.bitrate || 0
+                    };
+                });
 
             return res.json({ channels });
         } catch (error) {
