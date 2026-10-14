@@ -1296,6 +1296,7 @@ app.get(
                         kind: isVoice ? "voice" : "text",
                         categoryId: channel.parentId,
                         categoryName: channel.parent?.name || "Salons sans catégorie",
+                        categoryPosition: channel.parent?.rawPosition ?? -1,
                         position: channel.rawPosition
                     };
 
