@@ -2459,6 +2459,72 @@ async function refreshStaffAndStats() {
 client.on(Events.GuildMemberAdd, refreshStaffAndStats);
 client.on(Events.GuildMemberRemove, refreshStaffAndStats);
 client.on(Events.GuildMemberUpdate, refreshStaffAndStats);
+// Résumé d'une sanction renvoyé aux pages du site.
+function serializeSanctionRecord(item) {
+    return {
+        id: item.id,
+        type: item.type,
+        mode: item.mode || null,
+        memberId: item.memberId,
+        memberName: item.memberName || "Membre",
+        moderatorId: item.moderatorId || "",
+        moderatorName: item.moderatorName || "Inconnu",
+        reason: item.reason || "Aucune raison renseignée",
+        status: item.status || "unknown",
+        durationMinutes: item.durationMinutes ?? null,
+        createdAt: item.createdAt || null,
+        expiresAt: item.expiresAt || null,
+        endedAt: item.endedAt || null,
+        voiceRestorePending: Boolean(item.voiceRestorePending)
+    };
+}
+
+// Historique global : uniquement pour les personnes autorisées à modérer/consulter.
+app.get(
+    "/moderation/sanctions/all",
+    discordAuth,
+    requireSanctionHistoryPermission,
+    async (_req, res) => {
+        try {
+            const sanctions = [...sanctionsHistory]
+                .sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0))
+                .map(serializeSanctionRecord);
+
+            return res.json({ sanctions });
+        } catch (error) {
+            return handleRouteError(
+                res,
+                error,
+                "Impossible de récupérer toutes les sanctions."
+            );
+        }
+    }
+);
+
+// Mes sanctions : le membre cible est toujours l'utilisateur connecté.
+// Aucun memberId n'est accepté depuis le navigateur.
+app.get(
+    "/moderation/sanctions/mine",
+    discordAuth,
+    requireSitePermission("view_own_sanctions"),
+    async (req, res) => {
+        try {
+            const memberId = req.discordMember.id;
+            const sanctions = sanctionsHistory
+                .filter(item => item.memberId === memberId)
+                .sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0))
+                .map(serializeSanctionRecord);
+
+            return res.json({ memberId, sanctions });
+        } catch (error) {
+            return handleRouteError(
+                res,
+                error,
+                "Impossible de récupérer tes sanctions."
+            );
+        }
+    }
+);
 
 // ======================================================
 // DÉMARRAGE
