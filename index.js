@@ -3,6 +3,8 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 
 const {
     Client,
@@ -322,6 +324,289 @@ function handleRouteError(res, error, genericMessage) {
             ? error.message
             : genericMessage
     });
+}
+
+
+// ======================================================
+// HISTORIQUE DES SANCTIONS (fichier local du bot)
+// ======================================================
+
+const SANCTIONS_FILE = path.join(__dirname, "sanctions.json");
+const MAX_SANCTION_HISTORY = 1500;
+const CHAT_MUTE_PERMISSION_NAMES = [
+    "SendMessages",
+    "SendMessagesInThreads",
+    "CreatePublicThreads",
+    "CreatePrivateThreads"
+];
+
+function loadSanctionHistory() {
+    try {
+        if (!fs.existsSync(SANCTIONS_FILE)) return [];
+        const parsed = JSON.parse(fs.readFileSync(SANCTIONS_FILE, "utf8"));
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+        console.error("Impossible de lire sanctions.json :", error);
+        return [];
+    }
+}
+
+let sanctionsHistory = loadSanctionHistory();
+
+function saveSanctionHistory() {
+    try {
+        fs.writeFileSync(
+            SANCTIONS_FILE,
+            JSON.stringify(sanctionsHistory.slice(0, MAX_SANCTION_HISTORY), null, 2),
+            "utf8"
+        );
+    } catch (error) {
+        console.error("Impossible d'enregistrer sanctions.json :", error);
+        throw new Error("Impossible d'enregistrer l'historique des sanctions. Vérifie que le bot peut écrire dans son dossier.");
+    }
+}
+
+function addSanctionHistory(entry) {
+    const record = {
+        id: crypto.randomUUID(),
+        createdAt: new Date().toISOString(),
+        status: "completed",
+        ...entry
+    };
+    sanctionsHistory.unshift(record);
+    sanctionsHistory = sanctionsHistory.slice(0, MAX_SANCTION_HISTORY);
+    saveSanctionHistory();
+    return record;
+}
+
+function updateSanctionRecord(record, changes) {
+    Object.assign(record, changes);
+    saveSanctionHistory();
+    return record;
+}
+
+function hasSanctionActionPermission(req) {
+    const perms = getMemberPermissions(req.discordMember);
+    return perms.includes("temp_ban") || perms.includes("perm_ban");
+}
+
+function requireSanctionActionPermission(req, res, next) {
+    if (!req.discordMember) {
+        return res.status(401).json({ error: "Utilisateur Discord non authentifié." });
+    }
+    if (!hasSanctionActionPermission(req)) {
+        return res.status(403).json({ error: "Tu n'as pas la permission de sanctionner les membres." });
+    }
+    return next();
+}
+
+function requireSanctionHistoryPermission(req, res, next) {
+    if (!req.discordMember) {
+        return res.status(401).json({ error: "Utilisateur Discord non authentifié." });
+    }
+    const perms = getMemberPermissions(req.discordMember);
+    const allowed = ["sanctions_total", "temp_ban", "perm_ban"].some(p => perms.includes(p));
+    if (!allowed) {
+        return res.status(403).json({ error: "Tu n'as pas la permission de consulter les sanctions." });
+    }
+    return next();
+}
+
+function getChatTextChannels(guild) {
+    return [...guild.channels.cache.values()].filter(channel =>
+        channel &&
+        channel.guildId === guild.id &&
+        [0, 5, 15, 16].includes(channel.type)
+    );
+}
+
+function getOverwriteFlagState(overwrite, permissionName) {
+    const flag = PermissionFlagsBits[permissionName];
+    if (!flag) return null;
+    if (overwrite?.deny?.has(flag)) return false;
+    if (overwrite?.allow?.has(flag)) return true;
+    return null;
+}
+
+function getChatOverwriteSnapshot(channel, memberId) {
+    const overwrite = channel.permissionOverwrites.cache.get(memberId);
+    const states = {};
+    for (const name of CHAT_MUTE_PERMISSION_NAMES) {
+        states[name] = getOverwriteFlagState(overwrite, name);
+    }
+    return {
+        hadOverwrite: Boolean(overwrite),
+        permissionsLocked: Boolean(channel.permissionsLocked),
+        states
+    };
+}
+
+async function applyChatMuteToChannel(record, channel, botMember, reason) {
+    if (!channel || ![0, 5, 15, 16].includes(channel.type)) return;
+    const botPerms = channel.permissionsFor(botMember);
+    if (!botPerms || !botPerms.has(PermissionFlagsBits.ManageChannels)) {
+        throw new Error(`Le bot doit avoir la permission « Gérer les salons » dans #${channel.name}.`);
+    }
+
+    if (!record.chatOverwrites) record.chatOverwrites = {};
+    if (!record.chatOverwrites[channel.id]) {
+        record.chatOverwrites[channel.id] = getChatOverwriteSnapshot(channel, record.memberId);
+        saveSanctionHistory();
+    }
+
+    const denyOptions = Object.fromEntries(
+        CHAT_MUTE_PERMISSION_NAMES
+            .filter(name => Boolean(PermissionFlagsBits[name]))
+            .map(name => [name, false])
+    );
+    await channel.permissionOverwrites.edit(record.memberId, denyOptions, reason);
+}
+
+async function applyChatMute(record, guild, botMember, reason) {
+    await guild.channels.fetch();
+    const channels = getChatTextChannels(guild);
+    const inaccessible = channels.filter(channel => {
+        const perms = channel.permissionsFor(botMember);
+        return !perms || !perms.has(PermissionFlagsBits.ManageChannels);
+    });
+    if (inaccessible.length) {
+        throw new Error(
+            `Le bot n'a pas « Gérer les salons » dans : ${inaccessible.slice(0, 4).map(c => `#${c.name}`).join(", ")}${inaccessible.length > 4 ? "…" : ""}.`
+        );
+    }
+
+    record.chatOverwrites = record.chatOverwrites || {};
+    // Enregistrer l'état d'origine avant de modifier les permissions.
+    for (const channel of channels) {
+        if (!record.chatOverwrites[channel.id]) {
+            record.chatOverwrites[channel.id] = getChatOverwriteSnapshot(channel, record.memberId);
+        }
+    }
+    saveSanctionHistory();
+
+    for (const channel of channels) {
+        await applyChatMuteToChannel(record, channel, botMember, reason);
+    }
+}
+
+async function restoreChatMute(record, guild) {
+    const entries = Object.entries(record.chatOverwrites || {});
+    const errors = [];
+
+    for (const [channelId, snapshot] of entries) {
+        try {
+            const channel = await guild.channels.fetch(channelId).catch(() => null);
+            if (!channel?.permissionOverwrites) continue;
+
+            // On restaure uniquement les permissions touchées par ce mute.
+            const states = snapshot.states || {};
+            const restoreOptions = Object.fromEntries(
+                CHAT_MUTE_PERMISSION_NAMES
+                    .filter(name => Boolean(PermissionFlagsBits[name]))
+                    .map(name => [name, Object.prototype.hasOwnProperty.call(states, name) ? states[name] : null])
+            );
+            await channel.permissionOverwrites.edit(
+                record.memberId,
+                restoreOptions,
+                `Fin du mute chat de ${record.memberName || record.memberId}`
+            );
+
+            // Si aucun overwrite n'existait avant et qu'il est maintenant vide,
+            // le supprimer sans effacer d'autres permissions éventuellement ajoutées.
+            if (snapshot.permissionsLocked && channel.parentId && typeof channel.lockPermissions === "function") {
+                // Le salon était synchronisé avec sa catégorie avant le mute :
+                // rétablir cette synchronisation après restauration des flags.
+                await channel.lockPermissions();
+            } else if (!snapshot.hadOverwrite) {
+                const current = channel.permissionOverwrites.cache.get(record.memberId);
+                if (
+                    current &&
+                    current.allow.bitfield === 0n &&
+                    current.deny.bitfield === 0n
+                ) {
+                    await current.delete("Nettoyage de l'overwrite temporaire du mute chat");
+                }
+            }
+        } catch (error) {
+            errors.push(`${channelId}: ${error.message}`);
+        }
+    }
+
+    if (errors.length) {
+        throw new Error(`Certains salons n'ont pas pu être restaurés : ${errors.slice(0, 3).join("; ")}`);
+    }
+}
+
+function sanctionModeIncludesVoice(record) {
+    return record?.type === "mute" && ["voice", "both"].includes(record.mode);
+}
+
+function sanctionModeIncludesChat(record) {
+    return record?.type === "mute" && ["chat", "both"].includes(record.mode);
+}
+
+async function restoreMuteSanction(record, finalStatus = "expired") {
+    // Passer d'abord à "revoking" pour éviter que voiceStateUpdate ne réapplique
+    // le mute pendant que Discord traite la demande de dé-mute.
+    updateSanctionRecord(record, { status: "revoking" });
+
+    try {
+        const guild = await getGuild();
+
+        if (sanctionModeIncludesChat(record)) {
+            await restoreChatMute(record, guild);
+        }
+
+        if (sanctionModeIncludesVoice(record)) {
+            try {
+                const member = await guild.members.fetch(record.memberId);
+                if (member.voice?.channelId) {
+                    await member.voice.setMute(Boolean(record.voiceWasMuted), `Fin du mute vocal: ${record.reason || "sans raison"}`);
+                    record.voiceRestorePending = false;
+                } else {
+                    // Discord ne permet de changer le server-mute que lorsque le membre est en vocal.
+                    record.voiceRestorePending = true;
+                }
+            } catch (error) {
+                record.voiceRestorePending = true;
+                console.error(`Restauration du mute vocal pour ${record.memberId} différée :`, error.message);
+            }
+        }
+
+        updateSanctionRecord(record, {
+            status: finalStatus,
+            endedAt: new Date().toISOString()
+        });
+    } catch (error) {
+        updateSanctionRecord(record, { status: "active" });
+        throw error;
+    }
+}
+
+async function expireDueSanctions() {
+    const now = Date.now();
+    for (const record of [...sanctionsHistory]) {
+        if (record.status !== "active" || !record.expiresAt) continue;
+        if (Date.parse(record.expiresAt) > now) continue;
+
+        try {
+            if (record.type === "mute") {
+                await restoreMuteSanction(record, "expired");
+            } else if (record.type === "ban_temp") {
+                const guild = await getGuild();
+                await guild.members.unban(record.memberId, "Fin du ban temporaire").catch(error => {
+                    if (error.code !== 10026 && error.code !== 10013) throw error;
+                });
+                updateSanctionRecord(record, {
+                    status: "expired",
+                    endedAt: new Date().toISOString()
+                });
+                invalidateMembersCache();
+            }
+        } catch (error) {
+            console.error(`Erreur d'expiration de sanction ${record.id}:`, error);
+        }
+    }
 }
 
 // ======================================================
@@ -665,7 +950,7 @@ app.get(
 // BAN TEMPORAIRE
 // ======================================================
 
-function scheduleTemporaryUnban(guildId, memberId, expiresAt) {
+function scheduleTemporaryUnban(guildId, memberId, expiresAt, sanctionId = null) {
     const previous = temporaryBanTimers.get(memberId);
 
     if (previous) {
@@ -688,8 +973,17 @@ function scheduleTemporaryUnban(guildId, memberId, expiresAt) {
             );
 
             invalidateMembersCache();
+            if (sanctionId) {
+                const record = sanctionsHistory.find(item => item.id === sanctionId);
+                if (record) updateSanctionRecord(record, { status: "expired", endedAt: new Date().toISOString() });
+            }
         } catch (error) {
-            if (error.code !== 10026 && error.code !== 10013) {
+            if (error.code === 10026 || error.code === 10013) {
+                if (sanctionId) {
+                    const record = sanctionsHistory.find(item => item.id === sanctionId);
+                    if (record) updateSanctionRecord(record, { status: "expired", endedAt: new Date().toISOString() });
+                }
+            } else {
                 console.error(
                     `Erreur fin ban temporaire (${memberId}) :`,
                     error
@@ -767,10 +1061,24 @@ app.post(
                 reason
             });
 
+            const expiresAt = Date.now() + durationMinutes * 60 * 1000;
+            const sanctionRecord = addSanctionHistory({
+                type: "ban_temp",
+                memberId: target.id,
+                memberName: target.displayName,
+                moderatorId: actor.id,
+                moderatorName: actor.displayName || actor.user.username,
+                reason,
+                status: "active",
+                durationMinutes,
+                expiresAt: new Date(expiresAt).toISOString()
+            });
+
             scheduleTemporaryUnban(
                 guild.id,
                 target.id,
-                Date.now() + durationMinutes * 60 * 1000
+                expiresAt,
+                sanctionRecord.id
             );
 
             invalidateMembersCache();
@@ -849,6 +1157,25 @@ app.post(
                 clearTimeout(existingTimer.timer);
                 temporaryBanTimers.delete(target.id);
             }
+
+            for (const previousRecord of sanctionsHistory.filter(item =>
+                item.memberId === target.id && item.type === "ban_temp" && item.status === "active"
+            )) {
+                updateSanctionRecord(previousRecord, {
+                    status: "superseded",
+                    endedAt: new Date().toISOString()
+                });
+            }
+
+            addSanctionHistory({
+                type: "ban_perm",
+                memberId: target.id,
+                memberName: target.displayName,
+                moderatorId: actor.id,
+                moderatorName: actor.displayName || actor.user.username,
+                reason,
+                status: "active"
+            });
 
             invalidateMembersCache();
 
@@ -1127,6 +1454,15 @@ app.post(
             );
 
             await target.kick(reason);
+            addSanctionHistory({
+                type: "kick",
+                memberId: target.id,
+                memberName: target.displayName,
+                moderatorId: actor.id,
+                moderatorName: actor.displayName || actor.user.username,
+                reason,
+                status: "completed"
+            });
             invalidateMembersCache();
 
             console.log(
@@ -1231,6 +1567,307 @@ app.post(
         }
     }
 );
+
+// ======================================================
+// MUTE VOCAL / MUTE CHAT / MUTE COMBINÉ
+// ======================================================
+
+app.post(
+    "/moderation/mute",
+    discordAuth,
+    requireSanctionActionPermission,
+    async (req, res) => {
+        let record = null;
+        try {
+            const memberId = String(req.body?.memberId || "");
+            const mode = String(req.body?.mode || "");
+            const durationMinutes = Number(req.body?.durationMinutes);
+            const reason = typeof req.body?.reason === "string"
+                ? req.body.reason.trim().slice(0, 450)
+                : "";
+
+            if (!isSnowflake(memberId)) {
+                return res.status(400).json({ error: "Identifiant du membre invalide." });
+            }
+            if (!["voice", "chat", "both"].includes(mode)) {
+                return res.status(400).json({ error: "Choisis mute vocal, mute chat ou les deux." });
+            }
+            const allowedDurations = [5, 10, 30, 60, 360, 720, 1440, 4320, 10080];
+            if (!allowedDurations.includes(durationMinutes)) {
+                return res.status(400).json({ error: "Durée de sanction invalide." });
+            }
+            if (reason.length < 3) {
+                return res.status(400).json({ error: "Indique une raison d'au moins 3 caractères." });
+            }
+
+            const guild = await getGuild();
+            const actor = await guild.members.fetch(req.discordMember.id);
+            const target = await fetchTarget(guild, memberId);
+            const botMember = await getBotMember(guild);
+
+            ensureActorCanManageTarget(actor, target, guild);
+
+            if (["voice", "both"].includes(mode)) {
+                ensureBotCanManageTarget(botMember, target, PermissionFlagsBits.MuteMembers);
+            }
+
+            if (["chat", "both"].includes(mode) && target.permissions.has(PermissionFlagsBits.Administrator)) {
+                return res.status(400).json({
+                    error: "Le mute chat par permissions de salon ne peut pas bloquer un administrateur Discord."
+                });
+            }
+
+            const alreadyActive = sanctionsHistory.find(item =>
+                item.type === "mute" &&
+                item.memberId === target.id &&
+                ["active", "pending", "revoking"].includes(item.status) &&
+                (!item.expiresAt || Date.parse(item.expiresAt) > Date.now())
+            );
+            if (alreadyActive) {
+                return res.status(409).json({
+                    error: "Ce membre a déjà un mute actif. Consulte son historique et lève-le avant d'en créer un autre."
+                });
+            }
+
+            const expiresAt = Date.now() + durationMinutes * 60 * 1000;
+            record = addSanctionHistory({
+                type: "mute",
+                mode,
+                memberId: target.id,
+                memberName: target.displayName,
+                moderatorId: actor.id,
+                moderatorName: actor.displayName || actor.user.username,
+                reason,
+                status: "pending",
+                durationMinutes,
+                expiresAt: new Date(expiresAt).toISOString(),
+                voiceWasMuted: Boolean(target.voice?.serverMute),
+                chatOverwrites: {}
+            });
+
+            try {
+                if (["voice", "both"].includes(mode) && target.voice?.channelId) {
+                    await target.voice.setMute(true, `Mute vocal (${durationMinutes} min): ${reason}`);
+                }
+
+                if (["chat", "both"].includes(mode)) {
+                    await applyChatMute(record, guild, botMember, `Mute chat (${durationMinutes} min): ${reason}`);
+                }
+
+                updateSanctionRecord(record, { status: "active" });
+            } catch (error) {
+                // Rollback si l'application n'a pas pu se terminer entièrement.
+                try {
+                    if (["chat", "both"].includes(mode)) {
+                        await restoreChatMute(record, guild);
+                    }
+                    if (["voice", "both"].includes(mode) && target.voice?.channelId) {
+                        await target.voice.setMute(Boolean(record.voiceWasMuted), "Annulation du mute incomplet");
+                    }
+                } catch (rollbackError) {
+                    console.error("Échec du rollback de mute :", rollbackError);
+                }
+                updateSanctionRecord(record, {
+                    status: "failed",
+                    endedAt: new Date().toISOString(),
+                    error: error.message
+                });
+                throw error;
+            }
+
+            return res.json({
+                ok: true,
+                sanctionId: record.id,
+                message: mode === "voice"
+                    ? `Mute vocal appliqué pendant ${durationMinutes} minute(s). Le membre peut toujours entendre.`
+                    : mode === "chat"
+                        ? `Mute chat appliqué pendant ${durationMinutes} minute(s).`
+                        : `Mute vocal et chat appliqué pendant ${durationMinutes} minute(s).`
+            });
+        } catch (error) {
+            return handleRouteError(res, error, "Erreur pendant l'application du mute.");
+        }
+    }
+);
+
+// Consulter l'historique d'un membre.
+app.get(
+    "/moderation/sanctions",
+    discordAuth,
+    requireSanctionHistoryPermission,
+    async (req, res) => {
+        try {
+            const memberId = String(req.query.memberId || "");
+            if (!isSnowflake(memberId)) {
+                return res.status(400).json({ error: "Identifiant du membre invalide." });
+            }
+
+            const sanctions = sanctionsHistory
+                .filter(item => item.memberId === memberId)
+                .sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0))
+                .map(item => ({
+                    id: item.id,
+                    type: item.type,
+                    mode: item.mode || null,
+                    memberId: item.memberId,
+                    memberName: item.memberName || "Membre",
+                    moderatorId: item.moderatorId || "",
+                    moderatorName: item.moderatorName || "Inconnu",
+                    reason: item.reason || "Aucune raison renseignée",
+                    status: item.status,
+                    durationMinutes: item.durationMinutes ?? null,
+                    createdAt: item.createdAt,
+                    expiresAt: item.expiresAt || null,
+                    endedAt: item.endedAt || null,
+                    voiceRestorePending: Boolean(item.voiceRestorePending)
+                }));
+
+            return res.json({ memberId, sanctions });
+        } catch (error) {
+            return handleRouteError(res, error, "Impossible de récupérer l'historique des sanctions.");
+        }
+    }
+);
+
+// Lever un mute actif depuis l'historique.
+app.post(
+    "/moderation/sanctions/:sanctionId/revoke",
+    discordAuth,
+    requireSanctionActionPermission,
+    async (req, res) => {
+        try {
+            const sanctionId = String(req.params.sanctionId || "");
+            const record = sanctionsHistory.find(item => item.id === sanctionId);
+
+            if (!record || record.type !== "mute" || record.status !== "active") {
+                return res.status(404).json({ error: "Aucun mute actif correspondant." });
+            }
+
+            const guild = await getGuild();
+            const actor = await guild.members.fetch(req.discordMember.id);
+            const target = await guild.members.fetch(record.memberId).catch(() => null);
+
+            if (target) {
+                ensureActorCanManageTarget(actor, target, guild);
+            } else if (["voice", "both"].includes(record.mode)) {
+                return res.status(404).json({ error: "Le membre a quitté le serveur; la partie vocale ne peut pas être restaurée maintenant." });
+            }
+
+            await restoreMuteSanction(record, "revoked");
+            return res.json({ ok: true, message: `Sanction levée pour ${record.memberName || record.memberId}.` });
+        } catch (error) {
+            return handleRouteError(res, error, "Impossible de lever cette sanction.");
+        }
+    }
+);
+
+// Les mutes vocaux continuent à s'appliquer si le membre rejoint un vocal
+// après avoir reçu la sanction.
+client.on(Events.VoiceStateUpdate, async (_oldState, newState) => {
+    if (!newState.guild || newState.guild.id !== GUILD_ID || !newState.channelId) return;
+    const activeVoiceSanction = sanctionsHistory.find(item =>
+        item.type === "mute" &&
+        item.memberId === newState.id &&
+        item.status === "active" &&
+        sanctionModeIncludesVoice(item) &&
+        Date.parse(item.expiresAt || 0) > Date.now()
+    );
+
+    try {
+        if (activeVoiceSanction) {
+            if (!newState.serverMute) {
+                await newState.setMute(true, `Mute vocal actif: ${activeVoiceSanction.reason}`);
+            }
+            return;
+        }
+
+        const pendingRestore = [...sanctionsHistory].reverse().find(item =>
+            item.memberId === newState.id &&
+            item.type === "mute" &&
+            item.voiceRestorePending &&
+            ["voice", "both"].includes(item.mode) &&
+            item.status !== "active"
+        );
+        if (pendingRestore) {
+            await newState.setMute(Boolean(pendingRestore.voiceWasMuted), "Restauration du statut vocal après expiration d'une sanction");
+            updateSanctionRecord(pendingRestore, { voiceRestorePending: false });
+        }
+    } catch (error) {
+        console.error(`Impossible de mettre à jour le mute vocal de ${newState.id}:`, error);
+    }
+});
+
+// Les nouveaux salons texte créés pendant un mute chat restent mutés.
+client.on(Events.ChannelCreate, async channel => {
+    if (!channel.guildId || channel.guildId !== GUILD_ID || ![0, 5, 15, 16].includes(channel.type)) return;
+    const activeChatMutes = sanctionsHistory.filter(item =>
+        item.type === "mute" &&
+        item.status === "active" &&
+        sanctionModeIncludesChat(item) &&
+        Date.parse(item.expiresAt || 0) > Date.now()
+    );
+    if (!activeChatMutes.length) return;
+
+    try {
+        const guild = await getGuild();
+        const botMember = await getBotMember(guild);
+        for (const record of activeChatMutes) {
+            await applyChatMuteToChannel(record, channel, botMember, `Mute chat actif: ${record.reason}`);
+        }
+    } catch (error) {
+        console.error("Impossible d'appliquer un mute chat à un nouveau salon :", error);
+    }
+});
+
+async function resumeActiveSanctions() {
+    try {
+        const guild = await getGuild();
+        const botMember = await getBotMember(guild);
+        await expireDueSanctions();
+
+        // Si le processus a redémarré au milieu de l'application d'un mute,
+        // restaurer les permissions d'origine au lieu de laisser une sanction partielle.
+        for (const pending of sanctionsHistory.filter(item => item.type === "mute" && item.status === "pending")) {
+            try {
+                if (sanctionModeIncludesChat(pending)) {
+                    await restoreChatMute(pending, guild);
+                }
+                if (sanctionModeIncludesVoice(pending)) {
+                    const member = await guild.members.fetch(pending.memberId).catch(() => null);
+                    if (member?.voice?.channelId) {
+                        await member.voice.setMute(Boolean(pending.voiceWasMuted), "Annulation d'une sanction interrompue par un redémarrage");
+                    }
+                }
+                updateSanctionRecord(pending, { status: "failed", endedAt: new Date().toISOString(), error: "Le bot a redémarré pendant l'application de la sanction." });
+            } catch (error) {
+                console.error(`Impossible de restaurer le mute incomplet ${pending.id}:`, error);
+            }
+        }
+
+        for (const record of sanctionsHistory.filter(item => item.type === "mute" && item.status === "active")) {
+            if (Date.parse(record.expiresAt || 0) <= Date.now()) continue;
+            try {
+                if (sanctionModeIncludesChat(record)) {
+                    // Réappliquer les interdictions sur les salons enregistrés.
+                    for (const channelId of Object.keys(record.chatOverwrites || {})) {
+                        const channel = await guild.channels.fetch(channelId).catch(() => null);
+                        if (channel) await applyChatMuteToChannel(record, channel, botMember, `Reprise du mute chat: ${record.reason}`);
+                    }
+                }
+                if (sanctionModeIncludesVoice(record)) {
+                    const member = await guild.members.fetch(record.memberId).catch(() => null);
+                    if (member?.voice?.channelId && !member.voice.serverMute) {
+                        await member.voice.setMute(true, `Reprise du mute vocal: ${record.reason}`);
+                    }
+                }
+            } catch (error) {
+                console.error(`Impossible de rétablir la sanction ${record.id} :`, error);
+            }
+        }
+    } catch (error) {
+        console.error("Erreur pendant la reprise des sanctions actives :", error);
+    }
+}
 
 // ======================================================
 // MINI-DISCORD : SALONS, MEMBRES, MESSAGES ET ENVOI
@@ -1704,6 +2341,11 @@ app.get("/regles", (req, res) => res.json(rulesCache));
 
 client.once(Events.ClientReady, async () => {
     console.log(`✅ Connecté : ${client.user.tag}`);
+
+    await resumeActiveSanctions();
+    setInterval(() => {
+        expireDueSanctions().catch(error => console.error("Erreur vérification sanctions :", error));
+    }, 15 * 1000);
 
     try {
         eventsCache = await updateEvents(client, GUILD_ID);
