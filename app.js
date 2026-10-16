@@ -37,6 +37,7 @@ const registerReadyHandler = require("./discord/handlers/ready");
 const registerGuildMemberEvents = require("./discord/handlers/guildMembers");
 const registerVoiceStateUpdate = require("./discord/handlers/voiceStateUpdate");
 const registerChannelCreate = require("./discord/handlers/channelCreate");
+const registerDeplexoRoutes = require("./routes/deplexo.routes");
 const { createCreationService } = require("./services/creation.service");
 
 const PORT = process.env.PORT || 3000;
@@ -125,6 +126,7 @@ async function start() {
     registerChatRoutes(app, context);
     registerPublicRoutes(app, context);
     registerCreationRoutes(app, context);
+    registerDeplexoRoutes(app);
 
     const handlersContext = {
         GUILD_ID,
