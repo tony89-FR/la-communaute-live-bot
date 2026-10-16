@@ -108,6 +108,10 @@ module.exports = function registerCreationRoutes(app, context) {
                     title: req.body?.title,
                     message: req.body?.message,
                     url: req.body?.url,
+                    color: req.body?.color,
+                    imageUrl: req.body?.imageUrl,
+                    thumbnailUrl: req.body?.thumbnailUrl,
+                    footerText: req.body?.footerText,
                     mentions: req.body?.mentions,
                     actor,
                     actorName: actor.displayName || actor.user.username
