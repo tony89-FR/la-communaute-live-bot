@@ -39,9 +39,14 @@ const registerVoiceStateUpdate = require("./discord/handlers/voiceStateUpdate");
 const registerChannelCreate = require("./discord/handlers/channelCreate");
 const registerDeplexoRoutes = require("./routes/deplexo.routes");
 const { createCreationService } = require("./services/creation.service");
+const { createDatabase, resolveDatabasePath } = require("./database");
+const { createXpService } = require("./services/xp.service");
+const registerXpMessageCreate = require("./discord/handlers/xpMessageCreate");
+const registerXpVoiceStateUpdate = require("./discord/handlers/xpVoiceStateUpdate");
 
 const PORT = process.env.PORT || 3000;
 const FRONTEND_URL = "https://tony89-fr.github.io";
+const LEVEL_UP_CHANNEL_ID = process.env.LEVEL_UP_CHANNEL_ID || null;
 
 function createRequireSitePermission() {
     return permission => (req, res, next) => {
@@ -64,6 +69,10 @@ async function start() {
         allowedHeaders: ["Content-Type", "Authorization"]
     }));
     app.use(express.json({ limit: "25kb" }));
+
+    const database = createDatabase();
+    const xpService = createXpService(database);
+    console.log(`🗄️ Base SQLite ouverte : ${resolveDatabasePath()}`);
 
     const siteData = createSiteDataService();
     const discordUtils = createDiscordUtils(client, GUILD_ID);
@@ -130,6 +139,8 @@ async function start() {
 
     const handlersContext = {
         GUILD_ID,
+        LEVEL_UP_CHANNEL_ID,
+        xpService,
         STAFF_ROLES,
         ANNOUNCEMENTS_CHANNEL_ID,
         RULES_CHANNEL_ID,
@@ -145,6 +156,8 @@ async function start() {
     registerReadyHandler(client, handlersContext);
     registerGuildMemberEvents(client, handlersContext);
     registerVoiceStateUpdate(client, sanctions);
+    registerXpMessageCreate(client, handlersContext);
+    registerXpVoiceStateUpdate(client, handlersContext);
     registerChannelCreate(client, sanctions);
 
     const server = app.listen(PORT, () => {
@@ -155,7 +168,7 @@ async function start() {
         console.error("Erreur de connexion du bot Discord :", error);
     });
 
-    return { app, client, server };
+    return { app, client, server, database, xpService };
 }
 
 module.exports = { start };
