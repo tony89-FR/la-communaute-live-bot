@@ -5,7 +5,7 @@ const {
     createXpService,
     xpRequiredForLevel,
     getLevelFromXp
-} = require("../services/xp.service");
+} = require("../bot/xp-economie/xp.service");
 
 function makeMessage({ guildId = "guild-1", userId = "user-1", content = "bonjour", bot = false } = {}) {
     return {
