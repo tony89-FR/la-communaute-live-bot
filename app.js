@@ -177,7 +177,7 @@ async function start() {
     registerChannelCreate(client, sanctions);
 
     const server = app.listen(PORT, () => {
-        console.log(`🌍 Serveur lancé sur le port ${PORT}`);
+        console.log("Serveur lancé sur le port :", PORT);
     });
 
     client.login(process.env.DISCORD_TOKEN).catch(error => {
