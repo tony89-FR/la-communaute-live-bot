@@ -84,7 +84,7 @@ async function start() {
     const database = createDatabase();
     const xpService = createXpService(database);
 
-    console.log(`🗄️ Base SQLite ouverte : ${resolveDatabasePath()}`);
+    console.log("Base SQLite ouverte :", resolveDatabasePath());
 
     const siteData = createSiteDataService();
     const discordUtils = createDiscordUtils(client, GUILD_ID);
