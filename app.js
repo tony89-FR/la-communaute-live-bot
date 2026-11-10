@@ -1,4 +1,4 @@
-```js
+js
 const express = require("express");
 const cors = require("cors");
 const { PermissionFlagsBits } = require("discord.js");
@@ -188,4 +188,3 @@ async function start() {
 }
 
 module.exports = { start };
-```
